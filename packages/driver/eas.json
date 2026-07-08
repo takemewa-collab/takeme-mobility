@@ -15,7 +15,7 @@
         "EXPO_PUBLIC_SUPABASE_URL": "https://qghlgmqruguaoijkuwyu.supabase.co",
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_QCo_-OsEUSwodxTP8uNLoA_YFxeqngF",
         "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyAAzHRMlXeeVY7F9ttuGoqaBQCF-wpzLK8",
-        "EXPO_PUBLIC_API_BASE_URL": "https://takeme-mobility-git-main-takeme.vercel.app",
+        "EXPO_PUBLIC_API_BASE_URL": "https://takememobility.com",
         "EXPO_PUBLIC_AUTH_MODE": "dev"
       }
     },
@@ -28,7 +28,7 @@
         "EXPO_PUBLIC_SUPABASE_URL": "https://qghlgmqruguaoijkuwyu.supabase.co",
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_QCo_-OsEUSwodxTP8uNLoA_YFxeqngF",
         "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyAAzHRMlXeeVY7F9ttuGoqaBQCF-wpzLK8",
-        "EXPO_PUBLIC_API_BASE_URL": "https://takeme-mobility-git-main-takeme.vercel.app",
+        "EXPO_PUBLIC_API_BASE_URL": "https://takememobility.com",
         "EXPO_PUBLIC_AUTH_MODE": "dev"
       }
     },
@@ -38,7 +38,7 @@
         "EXPO_PUBLIC_SUPABASE_URL": "https://qghlgmqruguaoijkuwyu.supabase.co",
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_QCo_-OsEUSwodxTP8uNLoA_YFxeqngF",
         "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyAAzHRMlXeeVY7F9ttuGoqaBQCF-wpzLK8",
-        "EXPO_PUBLIC_API_BASE_URL": "https://takeme-mobility-git-main-takeme.vercel.app",
+        "EXPO_PUBLIC_API_BASE_URL": "https://takememobility.com",
         "EXPO_PUBLIC_AUTH_MODE": "production"
       }
     }
