@@ -9,6 +9,9 @@ export const API = {
   AUTH_LOGIN: '/api/auth/login',
   AUTH_SIGNUP: '/api/auth/signup',
 
+  // Account
+  ACCOUNT_DELETE: '/api/account/delete',
+
   // Quotes
   QUOTES: '/api/quotes',
 

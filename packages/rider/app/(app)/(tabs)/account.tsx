@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Pressable, ScrollView, Alert, Linking } from 'r
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/providers/auth';
+import { API } from '@takeme/shared';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing } from '@/theme/spacing';
@@ -18,8 +19,45 @@ const MENU_ITEMS = [
 export default function AccountScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { user, signOut } = useAuth();
+  const { user, session, signOut } = useAuth();
   const name = user?.user_metadata?.full_name ?? 'Rider';
+
+  const deleteAccount = async () => {
+    try {
+      const baseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
+      const res = await fetch(`${baseUrl}${API.ACCOUNT_DELETE}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await signOut();
+    } catch {
+      Alert.alert('Could not delete account', 'Please try again or contact support@takememobility.com.');
+    }
+  };
+
+  const handleDeleteAccount = () => {
+    // Two-step confirmation for an irreversible, data-destroying action.
+    Alert.alert(
+      'Delete Account',
+      'This permanently deletes your account and all associated data (rides, payment info, profile). This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () =>
+            Alert.alert('Are you sure?', 'This is permanent and cannot be reversed.', [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Delete my account', style: 'destructive', onPress: deleteAccount },
+            ]),
+        },
+      ],
+    );
+  };
 
   const handleMenuPress = (label: string) => {
     switch (label) {
@@ -87,6 +125,13 @@ export default function AccountScreen() {
             onPress={handleSignOut}
           >
             <Text style={styles.signOutText}>Sign Out</Text>
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => [styles.signOutBtn, pressed && styles.signOutPressed]}
+            onPress={handleDeleteAccount}
+          >
+            <Text style={styles.deleteText}>Delete Account</Text>
           </Pressable>
 
           <Text style={styles.version}>Takeme v0.1.0</Text>
@@ -186,6 +231,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '400',
     color: colors.gray500,
+    letterSpacing: -0.1,
+  },
+  deleteText: {
+    fontSize: 15,
+    fontWeight: '400',
+    color: '#DC2626',
     letterSpacing: -0.1,
   },
   version: {

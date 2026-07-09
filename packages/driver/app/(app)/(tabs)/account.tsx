@@ -10,19 +10,56 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '@/providers/auth';
-import { formatPhone } from '@takeme/shared';
+import { formatPhone, API } from '@takeme/shared';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing, borderRadius } from '@/theme/spacing';
 
 export default function DriverAccountScreen() {
-  const { user, signOut } = useAuth();
+  const { user, session, signOut } = useAuth();
 
   const handleSignOut = () => {
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Sign Out', style: 'destructive', onPress: signOut },
     ]);
+  };
+
+  const deleteAccount = async () => {
+    try {
+      const baseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
+      const res = await fetch(`${baseUrl}${API.ACCOUNT_DELETE}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await signOut();
+    } catch {
+      Alert.alert('Could not delete account', 'Please try again or contact support@takememobility.com.');
+    }
+  };
+
+  const handleDeleteAccount = () => {
+    // Two-step confirmation for an irreversible, data-destroying action.
+    Alert.alert(
+      'Delete Account',
+      'This permanently deletes your account and all associated data (trips, earnings, payout info, documents). This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () =>
+            Alert.alert('Are you sure?', 'This is permanent and cannot be reversed.', [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Delete my account', style: 'destructive', onPress: deleteAccount },
+            ]),
+        },
+      ],
+    );
   };
 
   const phone = user?.phone ?? user?.user_metadata?.phone;
@@ -65,6 +102,10 @@ export default function DriverAccountScreen() {
 
         <Pressable style={styles.signOutButton} onPress={handleSignOut}>
           <Text style={styles.signOutText}>Sign Out</Text>
+        </Pressable>
+
+        <Pressable style={styles.signOutButton} onPress={handleDeleteAccount}>
+          <Text style={styles.deleteText}>Delete Account</Text>
         </Pressable>
       </ScrollView>
     </SafeAreaView>
@@ -131,4 +172,5 @@ const styles = StyleSheet.create({
     alignItems: 'center', paddingVertical: spacing.md,
   },
   signOutText: { ...typography.bodyBold, color: colors.error },
+  deleteText: { ...typography.body, color: '#DC2626' },
 });
