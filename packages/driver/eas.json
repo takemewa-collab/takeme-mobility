@@ -47,7 +47,12 @@
     "production": {
       "ios": {
         "appleId": "your-apple-id@example.com",
-        "ascAppId": "your-asc-app-id"
+        "ascAppId": "your-asc-app-id",
+        "appleTeamId": "YOUR_APPLE_TEAM_ID"
+      },
+      "android": {
+        "serviceAccountKeyPath": "./play-service-account.json",
+        "track": "internal"
       }
     }
   }
