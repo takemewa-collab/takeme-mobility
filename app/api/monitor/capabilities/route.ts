@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
+import { verifyInternalRequest } from '@/lib/auth/internal-auth';
 import { SESClient, ListIdentitiesCommand } from '@aws-sdk/client-ses';
 import { SNSClient, GetSMSAttributesCommand } from '@aws-sdk/client-sns';
 
@@ -38,11 +39,7 @@ function getAWSConfig() {
 }
 
 export async function GET(request: Request) {
-  const authHeader = request.headers.get('authorization');
-  const cronSecret = process.env.CRON_SECRET;
-  const isVercelCron = request.headers.get('x-vercel-cron') === '1';
-
-  if (!isVercelCron && cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+  if (!verifyInternalRequest(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

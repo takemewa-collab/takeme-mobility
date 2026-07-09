@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { checkPermission, getUserRole } from '@/lib/auth/permissions';
 import { auditLog } from '@/lib/auth/audit';
+import { verifyInternalRequest } from '@/lib/auth/internal-auth';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Zero Trust — API Route Guard
@@ -19,11 +20,9 @@ const STEALTH_RESOURCES = new Set(['security', 'audit_logs', 'ops', 'monitoring'
 export function withPermission(resource: string, action: string): (handler: RouteHandler) => RouteHandler {
   return (handler: RouteHandler) => {
     return async (request: NextRequest, context?: unknown): Promise<NextResponse | Response> => {
-      // Allow cron jobs and internal calls
-      const cronSecret = process.env.CRON_SECRET;
-      const authHeader = request.headers.get('authorization');
-      const isVercelCron = request.headers.get('x-vercel-cron') === '1';
-      if (isVercelCron || (cronSecret && authHeader === `Bearer ${cronSecret}`)) {
+      // Allow cron jobs and internal calls — Bearer secret only, never the
+      // spoofable x-vercel-cron header (see verifyInternalRequest).
+      if (verifyInternalRequest(request)) {
         return handler(request, context);
       }
 

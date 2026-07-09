@@ -1,13 +1,11 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
+import { verifyInternalRequest } from '@/lib/auth/internal-auth';
 import { getAllMetrics } from '@/lib/invariants/metrics';
 
 // GET /api/invariants/metrics/snapshot — Daily cron to save metric snapshot
 export async function GET(request: Request) {
-  const isVercelCron = request.headers.get('x-vercel-cron') === '1';
-  const cronSecret = process.env.CRON_SECRET;
-  const auth = request.headers.get('authorization');
-  if (!isVercelCron && cronSecret && auth !== `Bearer ${cronSecret}`) {
+  if (!verifyInternalRequest(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

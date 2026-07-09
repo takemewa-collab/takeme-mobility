@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
+import { verifyInternalRequest } from '@/lib/auth/internal-auth';
 import { IAMClient, PutUserPolicyCommand } from '@aws-sdk/client-iam';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -70,13 +71,10 @@ async function fixRedis(): Promise<FixResult> {
 }
 
 async function handler(request: Request) {
-  const authHeader = request.headers.get('authorization');
-  const cronSecret = process.env.CRON_SECRET;
-  const isVercelCron = request.headers.get('x-vercel-cron') === '1';
-
-  if (!isVercelCron && cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+  if (!verifyInternalRequest(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+  const cronSecret = process.env.CRON_SECRET;
 
   // First, get current health status
   let healthData: { checks?: Array<{ service: string; status: string }> } = {};

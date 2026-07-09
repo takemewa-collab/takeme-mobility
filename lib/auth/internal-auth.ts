@@ -1,4 +1,4 @@
-import type { NextRequest } from 'next/server';
+import crypto from 'node:crypto';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Internal / cron authorization — FAIL CLOSED.
@@ -9,13 +9,23 @@ import type { NextRequest } from 'next/server';
 // CRON_SECRET env var is set, so the same check covers both internal fetches
 // (see lib/qstash.ts) and scheduled crons.
 //
-// Deliberately does NOT trust the `x-vercel-cron` header on its own — that
-// header is client-settable and therefore spoofable. If CRON_SECRET is not
-// configured we return false (fail closed) rather than allowing the call.
+// Deliberately does NOT trust the `x-vercel-cron` header — that header is
+// client-settable and NOT stripped at the edge, so trusting it alone is a
+// full authorization bypass (verified: an external request with
+// `x-vercel-cron: 1` reached protected cron routes). Authorization rests
+// solely on the Bearer secret. If CRON_SECRET is unset we return false
+// (fail closed) rather than allowing the call. The comparison is constant
+// time to avoid leaking the secret through response timing.
 // ═══════════════════════════════════════════════════════════════════════════
 
-export function verifyInternalRequest(request: NextRequest): boolean {
+export function verifyInternalRequest(request: Request): boolean {
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret) return false; // fail closed — no secret, no access
-  return request.headers.get('authorization') === `Bearer ${cronSecret}`;
+
+  const provided = request.headers.get('authorization');
+  if (!provided) return false;
+
+  const a = Buffer.from(provided);
+  const b = Buffer.from(`Bearer ${cronSecret}`);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }

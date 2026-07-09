@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
+import { verifyInternalRequest } from '@/lib/auth/internal-auth';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /api/invariants/check — Cron-triggered invariant checker (every 5 min)
@@ -15,10 +16,7 @@ interface CheckResult {
 }
 
 export async function GET(request: Request) {
-  const isVercelCron = request.headers.get('x-vercel-cron') === '1';
-  const cronSecret = process.env.CRON_SECRET;
-  const auth = request.headers.get('authorization');
-  if (!isVercelCron && cronSecret && auth !== `Bearer ${cronSecret}`) {
+  if (!verifyInternalRequest(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
