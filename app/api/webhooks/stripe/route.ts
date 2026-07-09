@@ -74,7 +74,12 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 3. Route by event type
+    // 3. Route by event type.
+    // The dedup row above is inserted BEFORE handling to block concurrent
+    // duplicates, but if handling fails we must RELEASE that claim — otherwise
+    // Stripe's retry hits the dedup and silently skips, permanently losing the
+    // money mutation (balance update / payout.failed earning, etc.).
+    try {
     switch (eventType) {
       // ── Authorization successful ─────────────────────────────────────
       case 'payment_intent.amount_capturable_updated': {
@@ -419,6 +424,14 @@ export async function POST(request: NextRequest) {
 
       default:
         console.log(`[Stripe Webhook] Unhandled event: ${eventType}`);
+    }
+    } catch (handlerErr) {
+      // Release the dedup claim so Stripe's automatic retry re-processes this
+      // event instead of being deduped away.
+      if (eventId) {
+        await supabase.from('processed_webhook_events').delete().eq('event_id', eventId);
+      }
+      throw handlerErr;
     }
 
     return NextResponse.json({ received: true });
