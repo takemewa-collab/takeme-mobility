@@ -5,7 +5,9 @@
 
 -- ── Extensions ───────────────────────────────────────────────────────────
 
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- gen_random_uuid() is in pg_catalog (PG13+), so no uuid-ossp dependency and no
+-- search_path assumptions. uuid-ossp lives in the `extensions` schema, which is
+-- on the search_path in the dashboard SQL Editor but not under `supabase db push`.
 CREATE EXTENSION IF NOT EXISTS "postgis";          -- geo queries on driver locations
 
 
@@ -79,7 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_riders_stripe ON riders(stripe_customer_id);
 -- ═══════════════════════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS drivers (
-  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   full_name       TEXT NOT NULL,
   email           TEXT UNIQUE,
   phone           TEXT NOT NULL,
@@ -104,7 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_drivers_active ON drivers(is_active, is_verified)
 -- ═══════════════════════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS vehicles (
-  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   driver_id       UUID NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
   vehicle_class   vehicle_class NOT NULL DEFAULT 'economy',
   make            TEXT NOT NULL,                 -- e.g. "BMW"
@@ -148,7 +150,7 @@ CREATE INDEX IF NOT EXISTS idx_driver_locations_geo
 -- ═══════════════════════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS ride_quotes (
-  id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   rider_id          UUID NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
 
   -- Locations
@@ -187,7 +189,7 @@ CREATE INDEX IF NOT EXISTS idx_ride_quotes_expires ON ride_quotes(expires_at);
 -- ═══════════════════════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS rides (
-  id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   rider_id            UUID NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   assigned_driver_id  UUID REFERENCES drivers(id) ON DELETE SET NULL,
   vehicle_id          UUID REFERENCES vehicles(id) ON DELETE SET NULL,
@@ -249,7 +251,7 @@ CREATE INDEX IF NOT EXISTS idx_rides_active
 -- ═══════════════════════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS ride_events (
-  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   ride_id     UUID NOT NULL REFERENCES rides(id) ON DELETE CASCADE,
   event_type  TEXT NOT NULL,                      -- e.g. 'status_change', 'location_update', 'fare_adjusted'
   old_status  ride_status,
@@ -270,7 +272,7 @@ CREATE INDEX IF NOT EXISTS idx_ride_events_created ON ride_events(created_at DES
 -- ═══════════════════════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS payments (
-  id                    UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   ride_id               UUID NOT NULL REFERENCES rides(id) ON DELETE CASCADE,
   rider_id              UUID NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
 
