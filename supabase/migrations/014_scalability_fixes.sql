@@ -63,7 +63,7 @@ CREATE OR REPLACE FUNCTION find_nearby_drivers(
   pickup_lat double precision,
   pickup_lng double precision,
   search_radius_m int DEFAULT 5000,
-  ride_vehicle_class text DEFAULT 'economy',
+  ride_vehicle_class vehicle_class DEFAULT 'economy',
   max_results int DEFAULT 10
 )
 RETURNS TABLE (
@@ -76,12 +76,13 @@ RETURNS TABLE (
   vehicle_color text,
   plate_number text,
   distance_m double precision,
-  heading double precision,
+  heading numeric,
   lat double precision,
   lng double precision
 )
 LANGUAGE sql
 STABLE
+SECURITY DEFINER
 AS $$
   SELECT
     d.id AS driver_id,
