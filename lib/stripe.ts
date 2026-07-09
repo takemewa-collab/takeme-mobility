@@ -237,7 +237,12 @@ export async function verifyWebhookSignature(
     .update(signedPayload)
     .digest('hex');
 
-  if (sig !== expected) throw new Error('Webhook signature verification failed');
+  // Constant-time comparison — avoids a timing side-channel on the HMAC.
+  const sigBuf = Buffer.from(sig, 'hex');
+  const expBuf = Buffer.from(expected, 'hex');
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    throw new Error('Webhook signature verification failed');
+  }
 
   // Check timestamp tolerance (5 min)
   const age = Math.floor(Date.now() / 1000) - parseInt(timestamp);

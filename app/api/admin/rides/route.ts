@@ -44,7 +44,7 @@ export async function GET(request: NextRequest) {
 
     // Parse JSON location strings and look up rider names
     const userIds = [...new Set((data ?? []).map((r: Record<string, unknown>) => r.user_id as string).filter(Boolean))]
-    let riderMap: Record<string, { full_name: string | null; email: string | null }> = {}
+    const riderMap: Record<string, { full_name: string | null; email: string | null }> = {}
 
     if (userIds.length > 0) {
       const { data: riders } = await svc

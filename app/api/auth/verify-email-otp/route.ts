@@ -73,7 +73,7 @@ export async function POST(request: NextRequest) {
     const { data: { users }, error: listErr } = await admin.auth.admin.listUsers({ perPage: 1 });
     // listUsers with filter isn't ideal — query auth.users directly
     const { data: userRows } = await admin
-      .from('users' as 'users')
+      .from('users' as const)
       .select('id, email')
       .eq('email', body.email)
       .limit(1);

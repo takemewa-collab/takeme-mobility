@@ -201,7 +201,12 @@ export async function verifyFleetWebhookSignature(payload: string, signature: st
   const signedPayload = `${timestamp}.${payload}`
   const expected = crypto.createHmac('sha256', secret).update(signedPayload).digest('hex')
 
-  if (sig !== expected) throw new Error('Webhook signature verification failed')
+  // Constant-time comparison — avoids a timing side-channel on the HMAC.
+  const sigBuf = Buffer.from(sig, 'hex')
+  const expBuf = Buffer.from(expected, 'hex')
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    throw new Error('Webhook signature verification failed')
+  }
 
   const age = Math.floor(Date.now() / 1000) - parseInt(timestamp)
   if (age > 300) throw new Error('Webhook timestamp too old')
