@@ -27,9 +27,31 @@ const dmSans = DM_Sans({
   subsets: ["latin"],
 });
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://takememobility.com";
+
 export const metadata: Metadata = {
-  title: "TakeMe Mobility — Premium Global Transportation",
+  metadataBase: new URL(SITE_URL),
+  title: {
+    default: "TakeMe Mobility — Premium Global Transportation",
+    template: "%s — TakeMe Mobility",
+  },
   description: "Premium rides, transparent pricing, and world-class reliability.",
+  applicationName: "TakeMe Mobility",
+  keywords: ["ride hailing", "rideshare", "premium transportation", "airport rides", "EV fleet", "TakeMe"],
+  authors: [{ name: "TakeMe Mobility" }],
+  openGraph: {
+    type: "website",
+    siteName: "TakeMe Mobility",
+    title: "TakeMe Mobility — Premium Global Transportation",
+    description: "Premium rides, transparent pricing, and world-class reliability.",
+    url: SITE_URL,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "TakeMe Mobility — Premium Global Transportation",
+    description: "Premium rides, transparent pricing, and world-class reliability.",
+  },
+  robots: { index: true, follow: true },
 };
 
 export default function RootLayout({
