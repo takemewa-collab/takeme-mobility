@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
+import { rateLimit } from '@/lib/rate-limit'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/auth/verify-otp
@@ -44,6 +45,10 @@ export async function POST(request: NextRequest) {
       const msg = err instanceof z.ZodError ? err.issues[0]?.message || 'Invalid input' : 'Invalid request'
       return NextResponse.json({ error: msg }, { status: 400 })
     }
+
+    // Rate limit per-phone to blunt code brute-forcing.
+    const limited = await rateLimit(request, 'verify-otp', body.phone)
+    if (limited) return limited
 
     // Verify OTP via Supabase (Twilio Verify)
     // This creates a real session automatically

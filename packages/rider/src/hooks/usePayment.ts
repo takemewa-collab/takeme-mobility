@@ -72,7 +72,8 @@ export function usePayment() {
           customerId,
           merchantDisplayName: 'Takeme',
           applePay: { merchantCountryCode: 'US' },
-          googlePay: { merchantCountryCode: 'US', testEnv: true },
+          // testEnv must be false in release builds or real cards won't charge.
+          googlePay: { merchantCountryCode: 'US', testEnv: __DEV__ },
           allowsDelayedPaymentMethods: false,
         });
 

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
+import { requireAdmin } from '@/lib/admin-auth';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /api/admin/monitoring/logs
@@ -9,6 +10,9 @@ import { createServiceClient } from '@/lib/supabase/service';
 
 export async function GET() {
   try {
+    const auth = await requireAdmin();
+    if (auth.error) return auth.error;
+
     const sb = createServiceClient();
     const { data, error } = await sb
       .from('monitoring_logs')

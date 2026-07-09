@@ -15,6 +15,12 @@ export async function GET(
 
     const { id } = await params
     const payout = await getPayout(id)
+
+    // Ownership: only the payout's owner may read it (amounts + stripe_account_id).
+    if (payout.owner_id !== user.id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
     return apiSuccess(payout)
   } catch (error) {
     return apiError(error)

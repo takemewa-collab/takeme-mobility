@@ -14,11 +14,7 @@ import { capturePaymentIntent } from '@/lib/stripe';
 
 const requestSchema = z.object({
   rideId: z.string().uuid(),
-  finalFare: z.number().positive().optional(),
 });
-
-// Maximum allowed adjustment ratio (final vs estimated)
-const MAX_FARE_ADJUSTMENT = 1.5; // 50% above estimated
 
 export async function POST(request: NextRequest) {
   try {
@@ -67,14 +63,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
 
-    // 5. Validate final fare adjustment
-    const finalAmount = body.finalFare ?? ride.estimated_fare;
-
-    if (finalAmount > ride.estimated_fare * MAX_FARE_ADJUSTMENT) {
-      return NextResponse.json({
-        error: `Final fare cannot exceed ${MAX_FARE_ADJUSTMENT * 100}% of estimated fare`,
-      }, { status: 400 });
-    }
+    // 5. Capture the AUTHORIZED amount. The final amount must never be taken
+    //    from the client — the caller here is the rider (ownership checked
+    //    above), so a client-supplied fare let them capture $0.01 for a real
+    //    ride. Any legitimate fare reduction must be computed server-side from
+    //    ride telemetry and applied as a partial capture / refund, not trusted
+    //    from the payer.
+    const finalAmount = ride.estimated_fare;
 
     // 6. Capture via Stripe
     const amountCents = Math.round(finalAmount * 100);
@@ -106,7 +101,7 @@ export async function POST(request: NextRequest) {
         payment_intent_id: result.id,
         estimated_fare: ride.estimated_fare,
         final_fare: finalAmount,
-        adjusted: body.finalFare !== undefined,
+        adjusted: false,
       },
     });
 

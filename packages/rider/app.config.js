@@ -32,6 +32,9 @@ module.exports = ({ config }) => ({
     infoPlist: {
       NSLocationWhenInUseUsageDescription:
         'Takeme needs your location to find nearby drivers and show your position on the map.',
+      // HTTPS-only app: no non-exempt encryption → avoids the export-compliance
+      // prompt holding every TestFlight/App Store submission.
+      ITSAppUsesNonExemptEncryption: false,
     },
   },
   android: {
@@ -50,13 +53,10 @@ module.exports = ({ config }) => ({
   plugins: [
     'expo-router',
     'expo-secure-store',
-    [
-      'expo-location',
-      {
-        locationAlwaysAndWhenInUsePermission:
-          'Takeme needs your location for ride tracking.',
-      },
-    ],
+    // Rider uses foreground location only (NSLocationWhenInUseUsageDescription
+    // above). No "Always"/background authorization is requested — asking for it
+    // without background use is a common App Store privacy rejection.
+    'expo-location',
     [
       '@stripe/stripe-react-native',
       {

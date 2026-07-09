@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dispatchRide, handleTimeout, processRedisQueue } from '@/lib/dispatch-queue';
 import { getDispatchQueueLength } from '@/lib/redis';
+import { verifyInternalRequest } from '@/lib/auth/internal-auth';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // /api/dispatch/worker
@@ -13,10 +14,10 @@ import { getDispatchQueueLength } from '@/lib/redis';
 // ═══════════════════════════════════════════════════════════════════════════
 
 function isAuthorized(request: NextRequest): boolean {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) return true;
-  const auth = request.headers.get('authorization');
-  return auth === `Bearer ${cronSecret}` || !!request.headers.get('upstash-signature');
+  // Fail closed: require the internal Bearer secret. Previously this returned
+  // true when CRON_SECRET was unset and trusted the mere presence of an
+  // (unverified) upstash-signature header — both let anyone drive dispatch.
+  return verifyInternalRequest(request);
 }
 
 // GET — Vercel Cron (safety net, every 1 min) or health check

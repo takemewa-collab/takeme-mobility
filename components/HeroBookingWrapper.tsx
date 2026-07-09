@@ -328,7 +328,14 @@ export default function HeroBookingWrapper({ ctaHref }: { ctaHref: string }) {
     } finally {
       setBooking(false);
     }
-  }, [user, pickup, dropoff, route, selectedFare, selectedTier, router]);
+  }, [
+    user, pickup, dropoff, route, selectedFare, selectedTier, router,
+    // Optional booking fields read inside the callback — must be deps or the
+    // POST body captures their stale initial (empty) values (silent data loss).
+    isAirportTrip, selectedAirline, flightNumber,
+    isPetRide, petType, petSize, petNotes,
+    rideFor, passengerName, passengerPhone, driverNotes, meetGreet, nameSign,
+  ]);
 
   // ── Booked ─────────────────────────────────────────────────────────
   if (booked) {

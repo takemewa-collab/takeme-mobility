@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createServiceClient } from '@/lib/supabase/service';
+import { verifyInternalRequest } from '@/lib/auth/internal-auth';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/driver/earnings/add
@@ -18,8 +19,11 @@ const schema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    // This endpoint should be called by internal systems only.
-    // In production, add API key validation here.
+    // Internal systems only (called server-side after ride completion).
+    // Credits real money to a wallet, so it must never be reachable by clients.
+    if (!verifyInternalRequest(request)) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
     const body = schema.parse(await request.json());
     const svc = createServiceClient();
 

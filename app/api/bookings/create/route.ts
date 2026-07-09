@@ -117,19 +117,21 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (insertError || !booking) {
+      // Log the real error server-side; return a generic message to the client.
       console.error('[bookings/create] Insert failed:', insertError);
-      // Surface the actual error for debugging
-      const detail = insertError?.message || 'Unknown database error';
-      return NextResponse.json({
-        error: `Booking failed: ${detail}. The bookings table may need to be created.`,
-      }, { status: 500 });
+      return NextResponse.json({ error: 'Could not create booking' }, { status: 500 });
     }
 
-    // 5. Try Stripe Checkout — optional, booking still succeeds without it
+    // 5. Stripe Checkout. A booking must NOT be confirmed without payment —
+    //    doing so previously handed out free rides on any Stripe error or when
+    //    the key was missing. The booking stays `pending` until Checkout
+    //    completes and the (signature-verified) webhook confirms it.
     let checkoutUrl: string | null = null;
 
     const stripeKey = process.env.STRIPE_SECRET_KEY;
-    if (stripeKey && !stripeKey.includes('PASTE')) {
+    const stripeConfigured = !!stripeKey && !stripeKey.includes('PASTE');
+
+    if (stripeConfigured) {
       try {
         const { createCheckoutSession } = await import('@/lib/stripe');
         const origin = request.headers.get('origin') || 'https://takememobility.com';
@@ -145,21 +147,25 @@ export async function POST(request: NextRequest) {
 
         checkoutUrl = session.url;
 
-        // Save session ID
         await supabase
           .from('bookings')
           .update({ stripe_session_id: session.id })
           .eq('id', booking.id);
       } catch (stripeErr) {
-        console.error('[bookings/create] Stripe failed (booking still created):', stripeErr);
-        // Booking exists — mark as confirmed without payment for now
-        await supabase
-          .from('bookings')
-          .update({ status: 'confirmed' })
-          .eq('id', booking.id);
+        // Payment could not be initialized — leave the booking pending (unpaid)
+        // and tell the client. Never auto-confirm.
+        console.error('[bookings/create] Stripe checkout failed:', stripeErr);
+        return NextResponse.json(
+          { error: 'Payment could not be started. Please try again.', bookingId: booking.id },
+          { status: 402 },
+        );
       }
+    } else if (process.env.NODE_ENV === 'production') {
+      // Misconfiguration in production: refuse rather than give a free ride.
+      console.error('[bookings/create] STRIPE_SECRET_KEY missing in production');
+      return NextResponse.json({ error: 'Payments are temporarily unavailable' }, { status: 503 });
     } else {
-      // No Stripe — auto-confirm
+      // Local/dev only (no Stripe configured): auto-confirm for testing.
       await supabase
         .from('bookings')
         .update({ status: 'confirmed' })

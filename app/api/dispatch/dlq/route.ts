@@ -1,17 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDLQItems, getDLQLength, retryFromDLQ, clearDLQ } from '@/lib/redis';
+import { verifyInternalRequest } from '@/lib/auth/internal-auth';
 
 // GET /api/dispatch/dlq — View dead-letter queue items
 // POST /api/dispatch/dlq — Retry one item from DLQ
 // DELETE /api/dispatch/dlq — Clear DLQ
 //
-// Protected by CRON_SECRET
+// Protected by CRON_SECRET (fail closed)
 
 function isAuthorized(request: NextRequest): boolean {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) return true; // allow in dev
-  const auth = request.headers.get('authorization');
-  return auth === `Bearer ${cronSecret}`;
+  return verifyInternalRequest(request);
 }
 
 export async function GET(request: NextRequest) {

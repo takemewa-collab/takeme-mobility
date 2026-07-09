@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createServiceClient } from '@/lib/supabase/service';
+import { requireAdmin } from '@/lib/admin-auth';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/driver/approve
@@ -17,7 +18,10 @@ const schema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    // TODO: Add admin auth check here
+    // Admin-only: approving a driver provisions a real Stripe cardholder + cards.
+    const auth = await requireAdmin();
+    if (auth.error) return auth.error;
+
     const body = schema.parse(await request.json());
     const svc = createServiceClient();
 

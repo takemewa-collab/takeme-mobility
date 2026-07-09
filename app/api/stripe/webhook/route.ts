@@ -13,9 +13,18 @@ export async function POST(request: NextRequest) {
     const body = await request.text();
     const signature = request.headers.get('stripe-signature');
 
-    // Verify signature if webhook secret is set
+    // Fail closed: a webhook that flips bookings to `confirmed` must ALWAYS be
+    // signature-verified. Previously verification was skipped when the secret
+    // or signature was absent, so a spoofed POST could confirm rides for free.
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-    if (webhookSecret && signature) {
+    if (!webhookSecret) {
+      console.error('[Stripe Webhook] STRIPE_WEBHOOK_SECRET not configured — rejecting');
+      return NextResponse.json({ error: 'Webhook not configured' }, { status: 500 });
+    }
+    if (!signature) {
+      return NextResponse.json({ error: 'Missing signature' }, { status: 400 });
+    }
+    {
       const crypto = await import('crypto');
       const parts = signature.split(',');
       const timestamp = parts.find(p => p.startsWith('t='))?.slice(2);
@@ -30,7 +39,10 @@ export async function POST(request: NextRequest) {
         .update(`${timestamp}.${body}`)
         .digest('hex');
 
-      if (sig !== expected) {
+      // Constant-time compare to avoid a timing side-channel.
+      const sigBuf = Buffer.from(sig, 'hex');
+      const expBuf = Buffer.from(expected, 'hex');
+      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
         return NextResponse.json({ error: 'Signature mismatch' }, { status: 400 });
       }
 

@@ -15,6 +15,16 @@ export async function GET(
 
     const { id } = await params
     const contract = await getContract(id)
+
+    // Ownership: only the contract's owner, driver, or a named signer may read it
+    // (it contains the rendered agreement + signer emails/IPs).
+    const signers = (contract as { contract_signers?: { signer_user_id?: string }[] }).contract_signers ?? []
+    const isParty =
+      contract.owner_id === user.id ||
+      contract.driver_id === user.id ||
+      signers.some((s) => s.signer_user_id === user.id)
+    if (!isParty) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
     return apiSuccess(contract)
   } catch (error) {
     return apiError(error)

@@ -69,23 +69,18 @@ export async function publishRideUpdate(rideId: string, data: {
  * Generate an Ably token for client-side subscription (rider/driver apps).
  * Called from /api/ably-token endpoint.
  */
-export async function createAblyToken(clientId: string): Promise<Ably.TokenDetails> {
+export async function createAblyToken(
+  clientId: string,
+  capability: Record<string, string[]>,
+): Promise<Ably.TokenDetails> {
   const ably = getAblyServer();
-  const tokenRequest = await ably.auth.createTokenRequest({
-    clientId,
-    capability: {
-      'driver:*': ['subscribe'],
-      'ride:*': ['subscribe'],
-    },
-  });
-  // createTokenRequest returns a TokenRequest, client uses it to get a token
-  // For simplicity, we return a token directly
+  // Scope the token to exactly the channels the caller is a party to.
+  // NEVER grant wildcard `driver:*` / `ride:*` — that would let any signed-in
+  // user subscribe to every driver's live GPS and every ride's status.
   const token = await ably.auth.requestToken({
     clientId,
-    capability: JSON.stringify({
-      'driver:*': ['subscribe'],
-      'ride:*': ['subscribe'],
-    }),
+    capability: JSON.stringify(capability),
+    ttl: 60 * 60 * 1000, // 1h — client re-fetches from /api/ably-token
   });
   return token;
 }

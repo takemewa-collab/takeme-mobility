@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { verifyEmailOTP } from '@/lib/email-otp';
+import { rateLimit } from '@/lib/rate-limit';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 
@@ -54,6 +55,11 @@ export async function POST(request: NextRequest) {
       const msg = err instanceof z.ZodError ? err.issues[0]?.message || 'Invalid input' : 'Invalid request';
       return NextResponse.json({ error: msg }, { status: 400 });
     }
+
+    // Rate limit per-email (not just per-IP) so a 6-digit code cannot be
+    // brute-forced across rotating IPs → account takeover.
+    const limited = await rateLimit(request, 'verify-otp', body.email.toLowerCase());
+    if (limited) return limited;
 
     // 1. Verify OTP from our otp_codes table
     const verification = await verifyEmailOTP(body.email, body.code);

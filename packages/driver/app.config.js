@@ -32,7 +32,12 @@ module.exports = ({ config }) => ({
         'Takeme Driver needs your location to receive ride requests from nearby riders.',
       NSLocationAlwaysAndWhenInUseUsageDescription:
         'Takeme Driver broadcasts your location to riders while you are online, even when the app is in the background.',
-      UIBackgroundModes: ['location', 'remote-notification', 'fetch'],
+      // Only 'location' is actually used. 'remote-notification' and 'fetch'
+      // were declared but there is no push-registration or background-fetch
+      // code, which draws App Review scrutiny — removed until implemented.
+      UIBackgroundModes: ['location'],
+      // HTTPS-only app → no non-exempt encryption (skips export-compliance hold).
+      ITSAppUsesNonExemptEncryption: false,
     },
   },
   android: {

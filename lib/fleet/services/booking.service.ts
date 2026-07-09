@@ -400,6 +400,10 @@ export async function activateBooking(
 
   const booking = await getBooking(bookingId)
 
+  if (actorId !== booking.driver_id && actorId !== booking.owner_id) {
+    throw new FleetError(FleetErrorCode.FORBIDDEN, 'Not authorized for this booking')
+  }
+
   if (booking.status !== 'confirmed' && booking.status !== 'pickup_ready') {
     throw new FleetError(
       FleetErrorCode.INVALID_STATUS,
@@ -451,6 +455,10 @@ export async function completeBooking(
   const svc = createServiceClient()
 
   const booking = await getBooking(bookingId)
+
+  if (actorId !== booking.driver_id && actorId !== booking.owner_id) {
+    throw new FleetError(FleetErrorCode.FORBIDDEN, 'Not authorized for this booking')
+  }
 
   if (booking.status !== 'in_use' && booking.status !== 'return_pending') {
     throw new FleetError(
@@ -558,6 +566,10 @@ export async function cancelBooking(bookingId: string, actorId: string, reason: 
   const svc = createServiceClient()
 
   const booking = await getBooking(bookingId)
+
+  if (actorId !== booking.driver_id && actorId !== booking.owner_id) {
+    throw new FleetError(FleetErrorCode.FORBIDDEN, 'Not authorized for this booking')
+  }
 
   if (!CANCELLABLE_STATUSES.includes(booking.status)) {
     throw new FleetError(
