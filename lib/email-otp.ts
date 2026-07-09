@@ -9,7 +9,10 @@ const ses = new SESClient({
   },
 });
 
-const FROM_EMAIL = process.env.SES_FROM_EMAIL ?? 'acilholding@gmail.com';
+// Fallback is a branded address, not a personal inbox. NOTE: whatever address
+// is used MUST be a verified identity in AWS SES or sends fail — set
+// SES_FROM_EMAIL to a verified no-reply@takememobility.com in production.
+const FROM_EMAIL = process.env.SES_FROM_EMAIL ?? 'no-reply@takememobility.com';
 
 export async function sendEmailOTP(email: string): Promise<{ success: boolean; error?: string }> {
   try {

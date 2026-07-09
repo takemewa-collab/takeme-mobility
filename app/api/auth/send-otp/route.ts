@@ -31,14 +31,15 @@ export async function POST(request: NextRequest) {
     })
 
     if (error) {
+      // Log the provider detail server-side; return a generic message.
       console.error('[send-otp] Supabase signInWithOtp failed:', error.message)
-      return NextResponse.json({ error: error.message }, { status: 500 })
+      return NextResponse.json({ error: 'Could not send code. Please try again.' }, { status: 500 })
     }
 
     return NextResponse.json({ sent: true })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
     console.error('[send-otp] Unhandled error:', message)
-    return NextResponse.json({ error: `Verification service error: ${message}` }, { status: 500 })
+    return NextResponse.json({ error: 'Could not send code. Please try again.' }, { status: 500 })
   }
 }

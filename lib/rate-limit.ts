@@ -38,6 +38,12 @@ function getClientIP(request: NextRequest): string {
  * Check rate limit for an API endpoint.
  * Returns null if allowed, or a 429 response if rate limited.
  */
+// Auth/OTP endpoints protect against brute force / account takeover, so if the
+// rate-limiter backend (Redis) is unavailable they must FAIL CLOSED — otherwise
+// an attacker who can knock Redis offline gets unlimited OTP guesses. Other
+// endpoints fail open so a Redis blip doesn't take down the whole app.
+const FAIL_CLOSED_ENDPOINTS = new Set(['send-otp', 'verify-otp']);
+
 export async function rateLimit(
   request: NextRequest,
   endpoint: string,
@@ -65,8 +71,15 @@ export async function rateLimit(
     }
 
     return null; // allowed
-  } catch {
-    // Redis down — allow the request (fail open)
+  } catch (err) {
+    if (FAIL_CLOSED_ENDPOINTS.has(endpoint)) {
+      console.error(`[rate-limit] backend unavailable for ${endpoint} — failing closed:`, err);
+      return NextResponse.json(
+        { error: 'Service temporarily unavailable. Please try again shortly.' },
+        { status: 503 },
+      );
+    }
+    // Non-sensitive endpoint — allow the request (fail open).
     return null;
   }
 }
