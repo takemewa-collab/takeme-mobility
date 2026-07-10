@@ -58,6 +58,13 @@ module.exports = ({ config }) => ({
     // without background use is a common App Store privacy rejection.
     'expo-location',
     [
+      'expo-notifications',
+      {
+        icon: './assets/notification-icon.png',
+        color: '#0F172A',
+      },
+    ],
+    [
       '@stripe/stripe-react-native',
       {
         merchantIdentifier: MERCHANT_ID,

@@ -24,6 +24,15 @@ interface RiderInfo {
   rating: number;
 }
 
+/** Payload of a `ride_request` push notification (offer not yet accepted). */
+export interface IncomingOffer {
+  rideId: string;
+  pickupAddress: string;
+  dropoffAddress: string;
+  estimatedFare?: number;
+  distanceKm?: number;
+}
+
 interface TripState {
   activeTrip: Ride | null;
   riderInfo: RiderInfo | null;
@@ -58,6 +67,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
 interface TripContextValue extends TripState {
   restoreActiveTrip: () => Promise<void>;
   clearTrip: () => void;
+  setIncomingOffer: (offer: IncomingOffer) => void;
   apiClient: ApiClient | null;
 }
 
@@ -170,6 +180,44 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'CLEAR' });
   }, []);
 
+  // Offered rides aren't assigned yet, so they can't be fetched via
+  // GET /api/driver/rides — build the trip from the push payload instead.
+  // The incoming screen only renders addresses, distance and fare.
+  const setIncomingOffer = useCallback((offer: IncomingOffer) => {
+    const now = new Date().toISOString();
+    const trip = {
+      id: offer.rideId,
+      rider_id: '',
+      assigned_driver_id: null,
+      vehicle_id: null,
+      quote_id: null,
+      status: 'searching_driver',
+      vehicle_class: 'electric',
+      pickup_lat: 0,
+      pickup_lng: 0,
+      pickup_address: offer.pickupAddress,
+      dropoff_lat: 0,
+      dropoff_lng: 0,
+      dropoff_address: offer.dropoffAddress,
+      distance_km: offer.distanceKm ?? null,
+      duration_min: null,
+      estimated_fare: offer.estimatedFare ?? null,
+      final_fare: null,
+      surge_multiplier: 1,
+      requested_at: now,
+      driver_assigned_at: null,
+      driver_arrived_at: null,
+      trip_started_at: null,
+      trip_completed_at: null,
+      cancelled_at: null,
+      cancel_reason: null,
+      cancelled_by: null,
+      rider_rating: null,
+      driver_rating: null,
+    } as Ride;
+    dispatch({ type: 'SET_TRIP', trip });
+  }, []);
+
   // Subscribe to realtime trip updates
   useEffect(() => {
     if (!state.activeTrip) return;
@@ -206,8 +254,8 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
   }, [user, restoreActiveTrip]);
 
   const value = useMemo(
-    () => ({ ...state, restoreActiveTrip, clearTrip, apiClient }),
-    [state, restoreActiveTrip, clearTrip, apiClient],
+    () => ({ ...state, restoreActiveTrip, clearTrip, setIncomingOffer, apiClient }),
+    [state, restoreActiveTrip, clearTrip, setIncomingOffer, apiClient],
   );
 
   return (

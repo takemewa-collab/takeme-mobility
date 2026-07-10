@@ -20,7 +20,7 @@ import {
   addExcludedDriver,
   getExcludedDrivers,
 } from '@/lib/redis';
-import { sendPushNotification, rideRequestNotification } from '@/lib/push';
+import { sendPushNotification, rideRequestNotification, rideAssignedNotification } from '@/lib/push';
 
 export const OFFER_TIMEOUT_SEC = 15;
 export const MAX_ESCALATIONS = 3;
@@ -130,23 +130,32 @@ export async function offerRideToDriver(
   // Set offer in Redis (15s TTL — auto-expires if driver doesn't respond)
   await setDriverOffer(rideId, driver.driver_id, OFFER_TIMEOUT_SEC);
 
-  // Send push notification to driver
+  // Send push notification to driver.
+  // push_tokens.user_id is the AUTH user id — resolve it from drivers.id first.
   const supabase = createServiceClient();
-  const { data: pushToken } = await supabase
-    .from('push_tokens')
-    .select('token')
-    .eq('user_id', driver.driver_id)
-    .eq('role', 'driver')
+  const { data: driverRow } = await supabase
+    .from('drivers')
+    .select('auth_user_id')
+    .eq('id', driver.driver_id)
     .single();
 
-  if (pushToken?.token) {
-    await sendPushNotification(rideRequestNotification(pushToken.token, {
-      rideId,
-      pickupAddress: ride.pickup_address,
-      dropoffAddress: ride.dropoff_address,
-      estimatedFare: Number(ride.estimated_fare),
-      distanceKm: Number(ride.distance_km),
-    }));
+  if (driverRow?.auth_user_id) {
+    const { data: pushToken } = await supabase
+      .from('push_tokens')
+      .select('token')
+      .eq('user_id', driverRow.auth_user_id)
+      .eq('role', 'driver')
+      .maybeSingle();
+
+    if (pushToken?.token) {
+      await sendPushNotification(rideRequestNotification(pushToken.token, {
+        rideId,
+        pickupAddress: ride.pickup_address,
+        dropoffAddress: ride.dropoff_address,
+        estimatedFare: Number(ride.estimated_fare),
+        distanceKm: Number(ride.distance_km),
+      }));
+    }
   }
 
   // Log the offer
@@ -277,6 +286,35 @@ export async function finalizeAssignment(rideId: string, driverId: string): Prom
       plate: vehicle?.plate_number ?? '',
     },
   });
+
+  // Notify the rider their driver is on the way (non-blocking).
+  // rides.rider_id IS the auth user id, so it matches push_tokens.user_id.
+  try {
+    const { data: rideRow } = await supabase
+      .from('rides')
+      .select('rider_id')
+      .eq('id', rideId)
+      .single();
+
+    if (rideRow?.rider_id) {
+      const { data: riderToken } = await supabase
+        .from('push_tokens')
+        .select('token')
+        .eq('user_id', rideRow.rider_id)
+        .eq('role', 'rider')
+        .maybeSingle();
+
+      if (riderToken?.token) {
+        await sendPushNotification(rideAssignedNotification(riderToken.token, {
+          rideId,
+          driverName: drivers.full_name,
+          vehicleDesc: vehicle ? `a ${vehicle.color} ${vehicle.make} ${vehicle.model}` : 'their vehicle',
+        }));
+      }
+    }
+  } catch (pushErr) {
+    console.warn('[dispatch] Rider push failed (non-fatal):', pushErr);
+  }
 
   const driverResult: NearbyDriver = {
     driver_id: driverId,

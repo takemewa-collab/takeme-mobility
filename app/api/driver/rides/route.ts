@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { getRequestUser } from '@/lib/auth/request-user';
 import { createServiceClient } from '@/lib/supabase/service';
 import { getDriverOffer, clearDriverOffer } from '@/lib/redis';
 import { finalizeAssignment } from '@/lib/dispatch';
 import { assessTripFraud } from '@/lib/fraud';
+import { sendPushNotification, rideCompletedNotification } from '@/lib/push';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /api/driver/rides      — get assigned ride for current driver
@@ -15,8 +16,7 @@ import { assessTripFraud } from '@/lib/fraud';
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const user = await getRequestUser(request);
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const svc = createServiceClient();
@@ -95,8 +95,7 @@ const ACTION_TO_STATUS: Record<string, string> = {
 
 export async function PUT(request: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const user = await getRequestUser(request);
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const body = updateSchema.parse(await request.json());
@@ -240,6 +239,35 @@ export async function PUT(request: NextRequest) {
       actor: 'driver',
       metadata: { driver_id: driver.id, action: body.action },
     });
+
+    // Notify the rider their trip is complete (non-blocking)
+    if (newStatus === 'completed' && update.status === 'completed') {
+      try {
+        const { data: rideRow } = await svc
+          .from('rides')
+          .select('rider_id, estimated_fare')
+          .eq('id', body.rideId)
+          .single();
+
+        if (rideRow?.rider_id) {
+          const { data: riderToken } = await svc
+            .from('push_tokens')
+            .select('token')
+            .eq('user_id', rideRow.rider_id)
+            .eq('role', 'rider')
+            .maybeSingle();
+
+          if (riderToken?.token) {
+            await sendPushNotification(rideCompletedNotification(riderToken.token, {
+              rideId: body.rideId,
+              fare: Number(rideRow.estimated_fare ?? 0),
+            }));
+          }
+        }
+      } catch (pushErr) {
+        console.warn('[driver/rides] Completion push failed (non-fatal):', pushErr);
+      }
+    }
 
     return NextResponse.json({ status: newStatus, rideId: body.rideId });
   } catch (err) {

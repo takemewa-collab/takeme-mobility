@@ -1,10 +1,12 @@
 import React from 'react';
 import { Redirect, Stack } from 'expo-router';
 import { useAuth } from '@/providers/auth';
+import { usePushNotifications } from '@/hooks/usePushNotifications';
 import { ActivityIndicator, View, StyleSheet } from 'react-native';
 
 export default function AppLayout() {
   const { user, initialized } = useAuth();
+  usePushNotifications();
 
   if (!initialized) {
     return (

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { getRequestAuth } from '@/lib/auth/request-user';
 import { createServiceClient } from '@/lib/supabase/service';
 import { cancelPaymentIntent } from '@/lib/stripe';
 
@@ -25,9 +25,9 @@ const requestSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const auth = await getRequestAuth(request);
+    if (!auth) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const { user, supabase } = auth;
 
     const body = requestSchema.parse(await request.json());
 

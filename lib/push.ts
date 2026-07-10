@@ -1,7 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // TAKEME MOBILITY — Push Notification Service
 // Uses Expo Push API to send notifications to driver/rider apps.
-// Push tokens are stored in driver_push_tokens / rider_push_tokens tables.
+// Push tokens are stored in the push_tokens table, keyed by (user_id, role)
+// where user_id is the AUTH user id (auth.users.id, not drivers.id).
 // ═══════════════════════════════════════════════════════════════════════════
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
@@ -100,6 +101,7 @@ export function rideRequestNotification(pushToken: string, rideData: {
       pickupAddress: rideData.pickupAddress,
       dropoffAddress: rideData.dropoffAddress,
       estimatedFare: rideData.estimatedFare,
+      distanceKm: rideData.distanceKm,
     },
     priority: 'high',
     channelId: 'ride-requests',
@@ -110,12 +112,14 @@ export function rideAssignedNotification(pushToken: string, data: {
   rideId: string;
   driverName: string;
   vehicleDesc: string;
-  etaMinutes: number;
+  etaMinutes?: number;
 }): PushMessage {
   return {
     to: pushToken,
     title: 'Driver on the way!',
-    body: `${data.driverName} in ${data.vehicleDesc} · ${data.etaMinutes} min away`,
+    body: data.etaMinutes
+      ? `${data.driverName} in ${data.vehicleDesc} · ${data.etaMinutes} min away`
+      : `${data.driverName} is on the way in ${data.vehicleDesc}`,
     data: { type: 'driver_assigned', rideId: data.rideId },
     priority: 'high',
   };

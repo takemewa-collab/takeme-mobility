@@ -32,10 +32,11 @@ module.exports = ({ config }) => ({
         'Takeme Driver needs your location to receive ride requests from nearby riders.',
       NSLocationAlwaysAndWhenInUseUsageDescription:
         'Takeme Driver broadcasts your location to riders while you are online, even when the app is in the background.',
-      // Only 'location' is actually used. 'remote-notification' and 'fetch'
-      // were declared but there is no push-registration or background-fetch
-      // code, which draws App Review scrutiny — removed until implemented.
-      UIBackgroundModes: ['location'],
+      // 'location': background GPS broadcast while online.
+      // 'remote-notification': ride-offer pushes wake the app
+      // (registration lives in src/hooks/usePushNotifications.ts).
+      // 'fetch' stays out — there is no background-fetch code.
+      UIBackgroundModes: ['location', 'remote-notification'],
       // HTTPS-only app → no non-exempt encryption (skips export-compliance hold).
       ITSAppUsesNonExemptEncryption: false,
     },

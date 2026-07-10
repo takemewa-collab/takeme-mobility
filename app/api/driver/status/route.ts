@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { getRequestUser } from '@/lib/auth/request-user';
 import { createServiceClient } from '@/lib/supabase/service';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -14,10 +14,9 @@ const requestSchema = z.object({
 
 export async function PUT(request: NextRequest) {
   try {
-    // 1. Authenticate
-    const supabase = await createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (authError || !user) {
+    // 1. Authenticate (web cookie session or mobile Bearer token)
+    const user = await getRequestUser(request);
+    if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -61,8 +60,7 @@ export async function PUT(request: NextRequest) {
 // GET current status
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const user = await getRequestUser(request);
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const svc = createServiceClient();

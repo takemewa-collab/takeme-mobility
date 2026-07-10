@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { getRequestAuth } from '@/lib/auth/request-user';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/driver/apply — Submit driver application
@@ -22,12 +22,11 @@ const applySchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-
-    if (authError || !user) {
+    const auth = await getRequestAuth(request);
+    if (!auth) {
       return NextResponse.json({ error: 'Sign in to apply.' }, { status: 401 });
     }
+    const { user, supabase } = auth;
 
     let body: z.infer<typeof applySchema>;
     try {
@@ -88,14 +87,13 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (!user) {
+    const auth = await getRequestAuth(request);
+    if (!auth) {
       return NextResponse.json({ error: 'Not signed in' }, { status: 401 });
     }
+    const { user, supabase } = auth;
 
     const { data: app } = await supabase
       .from('driver_applications')

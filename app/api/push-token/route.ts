@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { getRequestUser } from '@/lib/auth/request-user';
 import { createServiceClient } from '@/lib/supabase/service';
 
 // POST /api/push-token — Register or update a push token
@@ -12,8 +12,7 @@ const schema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const user = await getRequestUser(request);
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const body = schema.parse(await request.json());

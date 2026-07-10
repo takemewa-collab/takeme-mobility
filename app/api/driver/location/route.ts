@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { getRequestUser } from '@/lib/auth/request-user';
 import { createServiceClient } from '@/lib/supabase/service';
 import { cacheDriverLocation } from '@/lib/redis';
 import { publishDriverLocation } from '@/lib/ably';
@@ -24,9 +24,8 @@ export async function POST(request: NextRequest) {
     const rateLimited = await rateLimit(request, 'driver-location');
     if (rateLimited) return rateLimited;
 
-    // 1. Authenticate
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    // 1. Authenticate (web cookie session or mobile Bearer token)
+    const user = await getRequestUser(request);
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     // 2. Parse

@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { getRequestUser } from '@/lib/auth/request-user';
 import { createServiceClient } from '@/lib/supabase/service';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -7,10 +7,9 @@ import { createServiceClient } from '@/lib/supabase/service';
 // Returns all dashboard data for the current driver in a single call.
 // ═══════════════════════════════════════════════════════════════════════════
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const user = await getRequestUser(request);
     if (!user) return NextResponse.json({ error: 'Sign in required' }, { status: 401 });
 
     const svc = createServiceClient();

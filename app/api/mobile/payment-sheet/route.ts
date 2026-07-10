@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getRequestUser } from '@/lib/auth/request-user';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/mobile/payment-sheet
@@ -7,6 +8,10 @@ import { NextRequest, NextResponse } from 'next/server';
 //   1. Find or create Stripe Customer
 //   2. Create EphemeralKey for the customer
 //   3. Create PaymentIntent (manual capture — authorize only)
+//
+// The rider identity comes from the AUTHENTICATED caller, never the request
+// body — an ephemeral key for another rider's Stripe customer would expose
+// their saved payment methods.
 //
 // Returns: { clientSecret, ephemeralKey, customerId, paymentIntentId }
 // ═══════════════════════════════════════════════════════════════════════════
@@ -67,12 +72,19 @@ async function findOrCreateCustomer(riderId: string, email?: string): Promise<st
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { riderId, amount, email } = body;
+    const user = await getRequestUser(request);
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
-    if (!riderId || !amount) {
+    const body = await request.json();
+    const { amount } = body;
+    const riderId = user.id;
+    const email = user.email ?? (typeof body.email === 'string' ? body.email : undefined);
+
+    if (!amount) {
       return NextResponse.json(
-        { error: 'riderId and amount are required' },
+        { error: 'amount is required' },
         { status: 400 },
       );
     }

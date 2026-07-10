@@ -24,7 +24,7 @@
     "expo-dev-client": "~6.0.0",
     "expo-linking": "~8.0.0",
     "expo-location": "~19.0.0",
-    "expo-notifications": "~0.31.0",
+    "expo-notifications": "~0.32.16",
     "expo-router": "~6.0.0",
     "expo-secure-store": "~15.0.0",
     "expo-splash-screen": "~31.0.0",
