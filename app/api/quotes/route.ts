@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { calculateRoute, geocodeAddress } from '@/lib/route-service';
 import { generateQuotes, type QuoteResult } from '@/lib/pricing';
-import { createClient } from '@/lib/supabase/server';
+import { createApiClient } from '@/lib/supabase/api';
 import { getSurgeMultiplier } from '@/lib/surge';
 import { rateLimit } from '@/lib/rate-limit';
 
@@ -149,8 +149,7 @@ export async function POST(request: NextRequest) {
 
     if (body.persist) {
       try {
-        const supabase = await createClient();
-        const { data: { user } } = await supabase.auth.getUser();
+        const { supabase, user } = await createApiClient(request);
 
         if (user) {
           const rows = quotes.map(q => ({

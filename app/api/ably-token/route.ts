@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createApiClient } from '@/lib/supabase/api';
 import { createServiceClient } from '@/lib/supabase/service';
 import { createAblyToken } from '@/lib/ably';
 
@@ -8,8 +8,7 @@ import { createAblyToken } from '@/lib/ably';
 // drivers — not the wildcard `ride:*`/`driver:*` it used to hand out.
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const { user } = await createApiClient(request);
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     // Rides where the caller is the rider or the assigned driver.

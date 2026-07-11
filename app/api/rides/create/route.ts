@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { createApiClient } from '@/lib/supabase/api';
 import { findOrCreateCustomer, createPaymentIntent } from '@/lib/stripe';
 import { dispatchWithRetry } from '@/lib/dispatch-queue';
 import { TIERS, calculateFare, type VehicleClass } from '@/lib/pricing';
@@ -48,11 +48,10 @@ export async function POST(request: NextRequest) {
     const rateLimited = await rateLimit(request, 'rides-create');
     if (rateLimited) return rateLimited;
 
-    // 1. Authenticate
-    const supabase = await createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    // 1. Authenticate — cookie session (web) or bearer token (mobile apps).
+    const { supabase, user } = await createApiClient(request);
 
-    if (authError || !user) {
+    if (!user) {
       return NextResponse.json(
         { error: 'Sign in to book a ride.' },
         { status: 401 },
