@@ -89,11 +89,9 @@ export async function POST(request: NextRequest) {
     const customerId = await findOrCreateCustomer(riderId, email);
     console.log('[payment-sheet] Customer:', customerId);
 
-    // 2. Create ephemeral key for the customer (mobile PaymentSheet needs this)
-    const ephemeralKey = await stripePost('/ephemeral_keys', {
-      customer: customerId,
-    });
-    // Ephemeral key needs API version header
+    // 2. Create ephemeral key for the customer (mobile PaymentSheet needs
+    //    this). Unlike every other Stripe call, this one REQUIRES an explicit
+    //    Stripe-Version header — the plain stripePost helper would 500.
     const ephRes = await fetch(`${STRIPE_API}/ephemeral_keys`, {
       method: 'POST',
       headers: {
