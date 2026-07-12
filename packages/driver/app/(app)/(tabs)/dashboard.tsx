@@ -2,8 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import * as Notifications from 'expo-notifications';
 import { formatCurrency, API } from '@takeme/shared';
 import { TripMap } from '@/components/trip-map';
+import { registerForPush } from '@/lib/register-push';
 import { useDriverStatus } from '@/providers/driver-status';
 import { useTrip } from '@/providers/trip';
 import { colors } from '@/theme/colors';
@@ -54,6 +56,17 @@ export default function DashboardScreen() {
       router.push('/(app)/trip/incoming');
     }
   }, [activeTrip?.status, router]);
+
+  // Register for push once we have an authenticated API client, and route to
+  // the incoming screen when the driver taps a ride-request notification.
+  useEffect(() => {
+    if (apiClient) registerForPush(apiClient);
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data as { type?: string };
+      if (data?.type === 'ride_request') router.push('/(app)/trip/incoming');
+    });
+    return () => sub.remove();
+  }, [apiClient, router]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>

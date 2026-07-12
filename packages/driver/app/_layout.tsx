@@ -13,10 +13,12 @@ import { SupabaseProvider } from '@/providers/supabase';
 import { AuthProvider } from '@/providers/auth';
 import { DriverStatusProvider } from '@/providers/driver-status';
 import { TripProvider } from '@/providers/trip';
+import { initMonitoring, withMonitoring } from '@/lib/monitoring';
 
 SplashScreen.preventAutoHideAsync();
+initMonitoring();
 
-export default function RootLayout() {
+function RootLayout() {
   useEffect(() => {
     SplashScreen.hideAsync();
   }, []);
@@ -39,6 +41,8 @@ export default function RootLayout() {
     </GestureHandlerRootView>
   );
 }
+
+export default withMonitoring(RootLayout);
 
 const styles = StyleSheet.create({
   root: { flex: 1 },

@@ -17,11 +17,13 @@
   },
   "dependencies": {
     "@gorhom/bottom-sheet": "^5.1.1",
+    "@sentry/react-native": "~7.2.0",
     "@supabase/supabase-js": "^2.100.1",
     "@takeme/shared": "*",
     "expo": "~54.0.0",
     "expo-constants": "~18.0.0",
     "expo-dev-client": "~6.0.0",
+    "expo-device": "~8.0.10",
     "expo-linking": "~8.0.0",
     "expo-location": "~19.0.0",
     "expo-notifications": "~0.31.0",
