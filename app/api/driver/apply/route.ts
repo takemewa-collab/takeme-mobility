@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { createApiClient } from '@/lib/supabase/api';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/driver/apply — Submit driver application
@@ -22,8 +22,8 @@ const applySchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const { supabase, user } = await createApiClient(request);
+    const authError = user ? null : true;
 
     if (authError || !user) {
       return NextResponse.json({ error: 'Sign in to apply.' }, { status: 401 });
@@ -88,10 +88,9 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const { supabase, user } = await createApiClient(request);
 
     if (!user) {
       return NextResponse.json({ error: 'Not signed in' }, { status: 401 });

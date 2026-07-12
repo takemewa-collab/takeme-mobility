@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { createApiClient } from '@/lib/supabase/api';
 import { createServiceClient } from '@/lib/supabase/service';
 import { getDriverOffer, clearDriverOffer } from '@/lib/redis';
 import { finalizeAssignment } from '@/lib/dispatch';
@@ -16,8 +16,7 @@ import { capturePaymentIntent, cancelPaymentIntent } from '@/lib/stripe';
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const { supabase, user } = await createApiClient(request);
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const svc = createServiceClient();
@@ -96,8 +95,7 @@ const ACTION_TO_STATUS: Record<string, string> = {
 
 export async function PUT(request: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const { supabase, user } = await createApiClient(request);
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const body = updateSchema.parse(await request.json());

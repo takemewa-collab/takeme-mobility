@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { createApiClient } from '@/lib/supabase/api';
 import { createServiceClient } from '@/lib/supabase/service';
 import { cacheDriverLocation } from '@/lib/redis';
 import { publishDriverLocation } from '@/lib/ably';
@@ -25,8 +25,7 @@ export async function POST(request: NextRequest) {
     if (rateLimited) return rateLimited;
 
     // 1. Authenticate
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const { supabase, user } = await createApiClient(request);
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     // 2. Parse
