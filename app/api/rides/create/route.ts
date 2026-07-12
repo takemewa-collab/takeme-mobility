@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createApiClient } from '@/lib/supabase/api';
+import { createServiceClient } from '@/lib/supabase/service';
 import { findOrCreateCustomer, createPaymentIntent, attachRideToPaymentIntent } from '@/lib/stripe';
 import { dispatchWithRetry } from '@/lib/dispatch-queue';
 import { TIERS, calculateFare, type VehicleClass } from '@/lib/pricing';
@@ -172,6 +173,9 @@ export async function POST(request: NextRequest) {
     let clientSecret: string | null = null;
     let paymentIntentId: string | null = null;
 
+    // The payments table is server-owned financial state (no client INSERT
+    // policy), so write it with the service role after the user is authenticated.
+    const svcPayments = createServiceClient();
     try {
       if (body.paymentIntentId) {
         // The card was already authorized by the mobile PaymentSheet. Link that
@@ -181,7 +185,7 @@ export async function POST(request: NextRequest) {
         const linked = await attachRideToPaymentIntent(body.paymentIntentId, rideData.id);
         paymentIntentId = linked.id;
 
-        await supabase.from('payments').insert({
+        await svcPayments.from('payments').insert({
           ride_id: rideData.id,
           rider_id: user.id,
           stripe_payment_intent: linked.id,
@@ -219,7 +223,7 @@ export async function POST(request: NextRequest) {
         clientSecret = intent.clientSecret;
         paymentIntentId = intent.id;
 
-        await supabase.from('payments').insert({
+        await svcPayments.from('payments').insert({
           ride_id: rideData.id,
           rider_id: user.id,
           stripe_payment_intent: intent.id,
