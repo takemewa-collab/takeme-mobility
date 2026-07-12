@@ -171,6 +171,28 @@ export async function createCheckoutSession(params: CreateCheckoutParams): Promi
   };
 }
 
+// ── Link an already-authorized intent to a ride ──────────────────────────
+
+/**
+ * Stamps ride_id onto a PaymentIntent created before the ride existed (the
+ * mobile PaymentSheet authorizes the hold first, then the ride is created).
+ * This is what lets the webhook and capture step find the intent by ride.
+ */
+export async function attachRideToPaymentIntent(
+  paymentIntentId: string,
+  rideId: string,
+): Promise<{ id: string; status: string; amount: number }> {
+  const data = await stripeRequest(`/payment_intents/${paymentIntentId}`, {
+    'metadata[ride_id]': rideId,
+    'metadata[platform]': 'takeme',
+  });
+  return {
+    id: data.id as string,
+    status: data.status as string,
+    amount: data.amount as number,
+  };
+}
+
 // ── Capture (after ride completes) ───────────────────────────────────────
 
 export async function capturePaymentIntent(

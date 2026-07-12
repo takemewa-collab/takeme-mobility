@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createApiClient } from '@/lib/supabase/api';
-import { findOrCreateCustomer, createPaymentIntent } from '@/lib/stripe';
+import { findOrCreateCustomer, createPaymentIntent, attachRideToPaymentIntent } from '@/lib/stripe';
 import { dispatchWithRetry } from '@/lib/dispatch-queue';
 import { TIERS, calculateFare, type VehicleClass } from '@/lib/pricing';
 import { rateLimit } from '@/lib/rate-limit';
@@ -40,6 +40,11 @@ const requestSchema = z.object({
   totalFare: z.number().positive(),
   surgeMultiplier: z.number().min(1).max(5).default(1.0),
   currency: z.string().length(3).default('USD'),
+
+  // Mobile clients authorize the card via /api/mobile/payment-sheet BEFORE the
+  // ride exists, then pass that intent here so we link it instead of creating a
+  // second one. Absent → legacy path that creates its own intent.
+  paymentIntentId: z.string().startsWith('pi_').optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -168,45 +173,61 @@ export async function POST(request: NextRequest) {
     let paymentIntentId: string | null = null;
 
     try {
-      // Ensure Stripe customer
-      const { data: rider } = await supabase
-        .from('riders')
-        .select('stripe_customer_id, full_name, email')
-        .eq('id', user.id)
-        .single();
+      if (body.paymentIntentId) {
+        // The card was already authorized by the mobile PaymentSheet. Link that
+        // intent to this ride (no second hold) and record it for capture. It is
+        // already authorized by now, so the row starts 'authorized'; the
+        // amount_capturable webhook is idempotent if it lands again.
+        const linked = await attachRideToPaymentIntent(body.paymentIntentId, rideData.id);
+        paymentIntentId = linked.id;
 
-      let customerId = rider?.stripe_customer_id;
-      if (!customerId) {
-        customerId = await findOrCreateCustomer(
-          user.email ?? rider?.email ?? '',
-          rider?.full_name ?? undefined,
-          user.id,
-        );
-        await supabase.from('riders').update({ stripe_customer_id: customerId }).eq('id', user.id);
+        await supabase.from('payments').insert({
+          ride_id: rideData.id,
+          rider_id: user.id,
+          stripe_payment_intent: linked.id,
+          amount: verifiedFare,
+          currency: body.currency,
+          status: linked.status === 'requires_capture' ? 'authorized' : 'pending',
+        });
+      } else {
+        // Legacy path: no pre-authorized intent, create one here.
+        const { data: rider } = await supabase
+          .from('riders')
+          .select('stripe_customer_id, full_name, email')
+          .eq('id', user.id)
+          .single();
+
+        let customerId = rider?.stripe_customer_id;
+        if (!customerId) {
+          customerId = await findOrCreateCustomer(
+            user.email ?? rider?.email ?? '',
+            rider?.full_name ?? undefined,
+            user.id,
+          );
+          await supabase.from('riders').update({ stripe_customer_id: customerId }).eq('id', user.id);
+        }
+
+        const amountCents = Math.round(verifiedFare * 100);
+        const intent = await createPaymentIntent({
+          amount: amountCents,
+          currency: body.currency.toLowerCase(),
+          customerId,
+          rideId: rideData.id,
+          description: `TakeMe ${body.vehicleClass}: ${body.pickupAddress} → ${body.dropoffAddress}`,
+        });
+
+        clientSecret = intent.clientSecret;
+        paymentIntentId = intent.id;
+
+        await supabase.from('payments').insert({
+          ride_id: rideData.id,
+          rider_id: user.id,
+          stripe_payment_intent: intent.id,
+          amount: verifiedFare,
+          currency: body.currency,
+          status: 'pending',
+        });
       }
-
-      // Create PaymentIntent with manual capture
-      const amountCents = Math.round(verifiedFare * 100);
-      const intent = await createPaymentIntent({
-        amount: amountCents,
-        currency: body.currency.toLowerCase(),
-        customerId,
-        rideId: rideData.id,
-        description: `TakeMe ${body.vehicleClass}: ${body.pickupAddress} → ${body.dropoffAddress}`,
-      });
-
-      clientSecret = intent.clientSecret;
-      paymentIntentId = intent.id;
-
-      // Write payment record
-      await supabase.from('payments').insert({
-        ride_id: rideData.id,
-        rider_id: user.id,
-        stripe_payment_intent: intent.id,
-        amount: verifiedFare,
-        currency: body.currency,
-        status: 'pending',
-      });
     } catch (payErr) {
       // Payment setup failure is non-fatal — ride is created, payment can retry
       console.warn('Payment setup failed (ride still created):', payErr);

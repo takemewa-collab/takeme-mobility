@@ -5,7 +5,10 @@ import React, {
   useEffect,
   useMemo,
   useReducer,
+  useRef,
+  useState,
 } from 'react';
+import { AppState } from 'react-native';
 import type { Ride, RideStatus } from '@takeme/shared';
 import { ApiClient, API } from '@takeme/shared';
 import { useSupabase } from './supabase';
@@ -168,6 +171,73 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
 
   const clearTrip = useCallback(() => {
     dispatch({ type: 'CLEAR' });
+  }, []);
+
+  // Resolve this driver's row id once per session — assignment events are keyed
+  // on drivers.id, not the auth user id.
+  const [driverId, setDriverId] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!user) {
+      setDriverId(null);
+      return;
+    }
+    (async () => {
+      const { data } = await supabase
+        .from('drivers')
+        .select('id')
+        .eq('auth_user_id', user.id)
+        .maybeSingle();
+      if (!cancelled) setDriverId(data?.id ?? null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user, supabase]);
+
+  // Watch for a ride being ASSIGNED to this driver while idle. Without this an
+  // idle driver only discovers new rides on re-login — the dispatch auto-assign
+  // would strand the ride. Any insert/update that lands an active ride on this
+  // driver becomes the activeTrip, and dashboard auto-navigates to /incoming.
+  const activeTripId = state.activeTrip?.id ?? null;
+  useEffect(() => {
+    if (!driverId) return;
+
+    const channel = supabase
+      .channel(`driver_assignments:${driverId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'rides',
+          filter: `assigned_driver_id=eq.${driverId}`,
+        },
+        (payload) => {
+          const ride = payload.new as Ride;
+          if (!ride?.id) return;
+          if (!DRIVER_ACTIVE_STATUSES.includes(ride.status)) return;
+          if (ride.id === activeTripId) return; // already tracked by the other channel
+          dispatch({ type: 'SET_TRIP', trip: ride });
+          if (ride.rider_id) fetchRiderInfo(ride.rider_id);
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [driverId, activeTripId, supabase, fetchRiderInfo]);
+
+  // On return to the foreground, re-sync in case realtime dropped events while
+  // backgrounded (also the polling-style safety net if the socket was down).
+  const restoreRef = useRef(restoreActiveTrip);
+  restoreRef.current = restoreActiveTrip;
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') restoreRef.current();
+    });
+    return () => sub.remove();
   }, []);
 
   // Subscribe to realtime trip updates

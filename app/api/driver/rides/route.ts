@@ -5,6 +5,7 @@ import { createServiceClient } from '@/lib/supabase/service';
 import { getDriverOffer, clearDriverOffer } from '@/lib/redis';
 import { finalizeAssignment } from '@/lib/dispatch';
 import { assessTripFraud } from '@/lib/fraud';
+import { capturePaymentIntent, cancelPaymentIntent } from '@/lib/stripe';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /api/driver/rides      — get assigned ride for current driver
@@ -224,11 +225,50 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Ride status changed — please refresh' }, { status: 409 });
     }
 
+    // The persisted status can differ from newStatus (fraud flips complete →
+    // cancelled), so settle payment off what was actually written.
+    const finalStatus = (update.status as string) ?? newStatus;
+
     // Update driver status
-    if (newStatus === 'in_progress') {
+    if (finalStatus === 'in_progress') {
       await svc.from('drivers').update({ status: 'on_trip' }).eq('id', driver.id);
-    } else if (newStatus === 'completed' || newStatus === 'cancelled') {
+    } else if (finalStatus === 'completed' || finalStatus === 'cancelled') {
       await svc.from('drivers').update({ status: 'available' }).eq('id', driver.id);
+    }
+
+    // Settle the authorized card hold. Non-blocking: a Stripe hiccup must not
+    // strand the ride in a wrong state — the webhook and reconciliation can
+    // still finish it — but the common path resolves here.
+    if (finalStatus === 'completed' || finalStatus === 'cancelled') {
+      try {
+        const { data: pay } = await svc
+          .from('payments')
+          .select('stripe_payment_intent, amount, status')
+          .eq('ride_id', body.rideId)
+          .maybeSingle();
+
+        if (pay?.stripe_payment_intent && pay.status !== 'captured' && pay.status !== 'cancelled') {
+          if (finalStatus === 'completed') {
+            const captured = await capturePaymentIntent(pay.stripe_payment_intent);
+            await svc.from('payments')
+              .update({ status: 'captured' })
+              .eq('ride_id', body.rideId);
+            // The captured amount is the fare the rider actually pays.
+            await svc.from('rides')
+              .update({ final_fare: pay.amount })
+              .eq('id', body.rideId);
+            console.log('[driver/rides] captured', captured.id, 'for ride', body.rideId);
+          } else {
+            await cancelPaymentIntent(pay.stripe_payment_intent, 'abandoned');
+            await svc.from('payments')
+              .update({ status: 'cancelled' })
+              .eq('ride_id', body.rideId);
+            console.log('[driver/rides] released hold for cancelled ride', body.rideId);
+          }
+        }
+      } catch (payErr) {
+        console.error('[driver/rides] payment settlement failed (non-blocking):', payErr);
+      }
     }
 
     // Log event
