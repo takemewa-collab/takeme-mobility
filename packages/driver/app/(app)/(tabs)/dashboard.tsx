@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { formatCurrency, API } from '@takeme/shared';
+import { TripMap } from '@/components/trip-map';
 import { useDriverStatus } from '@/providers/driver-status';
 import { useTrip } from '@/providers/trip';
 import { colors } from '@/theme/colors';
@@ -11,7 +12,8 @@ import { spacing, borderRadius } from '@/theme/spacing';
 
 export default function DashboardScreen() {
   const router = useRouter();
-  const { status, goOnline, goOffline, loading, isLocationPermitted, error } = useDriverStatus();
+  const { status, goOnline, goOffline, loading, isLocationPermitted, error, location } =
+    useDriverStatus();
   const { activeTrip, apiClient } = useTrip();
 
   const [dashData, setDashData] = useState<{
@@ -55,10 +57,13 @@ export default function DashboardScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.mapPlaceholder}>
-        <Text style={styles.mapLabel}>
-          {isOnline ? 'Waiting for ride requests...' : "You're offline"}
-        </Text>
+      <View style={styles.mapContainer}>
+        <TripMap driver={location} followDriver />
+        <View style={styles.mapBadge}>
+          <Text style={styles.mapBadgeText}>
+            {isOnline ? 'Waiting for ride requests…' : "You're offline"}
+          </Text>
+        </View>
       </View>
 
       <View style={styles.statusCard}>
@@ -106,8 +111,22 @@ function StatCard({ label, value }: { label: string; value: string }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  mapPlaceholder: { flex: 1, backgroundColor: colors.gray100, alignItems: 'center', justifyContent: 'center' },
-  mapLabel: { ...typography.h3, color: colors.textMuted, textAlign: 'center' },
+  mapContainer: { flex: 1, backgroundColor: colors.gray100 },
+  mapBadge: {
+    position: 'absolute',
+    top: spacing.lg,
+    alignSelf: 'center',
+    backgroundColor: colors.white,
+    borderRadius: borderRadius.full,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    shadowColor: colors.black,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  mapBadgeText: { ...typography.caption, color: colors.text },
   statusCard: {
     backgroundColor: colors.white, borderTopLeftRadius: borderRadius.xl, borderTopRightRadius: borderRadius.xl,
     padding: spacing['2xl'], shadowColor: colors.black, shadowOffset: { width: 0, height: -2 },

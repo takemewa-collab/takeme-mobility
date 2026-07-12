@@ -4,6 +4,8 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { formatCurrency, formatDistanceMi, API } from '@takeme/shared';
 import { Button } from '@/components/ui';
+import { TripMap } from '@/components/trip-map';
+import { useDriverStatus } from '@/providers/driver-status';
 import { useTrip } from '@/providers/trip';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
@@ -12,6 +14,7 @@ import { spacing, borderRadius } from '@/theme/spacing';
 export default function ActiveTripScreen() {
   const router = useRouter();
   const { activeTrip, apiClient } = useTrip();
+  const { location } = useDriverStatus();
   const [elapsed, setElapsed] = useState(0);
   const [completing, setCompleting] = useState(false);
 
@@ -43,8 +46,15 @@ export default function ActiveTripScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.mapPlaceholder}>
-        <Text style={styles.mapLabel}>Trip in progress</Text>
+      <View style={styles.mapContainer}>
+        <TripMap
+          driver={location}
+          dropoff={
+            activeTrip
+              ? { latitude: activeTrip.dropoff_lat, longitude: activeTrip.dropoff_lng }
+              : null
+          }
+        />
       </View>
 
       <View style={styles.card}>
@@ -95,11 +105,7 @@ export default function ActiveTripScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  mapPlaceholder: {
-    flex: 1, backgroundColor: colors.gray100,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  mapLabel: { ...typography.h3, color: colors.textMuted },
+  mapContainer: { flex: 1, backgroundColor: colors.gray100 },
   card: {
     backgroundColor: colors.white,
     borderTopLeftRadius: borderRadius.xl, borderTopRightRadius: borderRadius.xl,

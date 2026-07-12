@@ -4,6 +4,8 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { API } from '@takeme/shared';
 import { Button } from '@/components/ui';
+import { TripMap } from '@/components/trip-map';
+import { useDriverStatus } from '@/providers/driver-status';
 import { useTrip } from '@/providers/trip';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
@@ -12,6 +14,7 @@ import { spacing, borderRadius } from '@/theme/spacing';
 export default function ArrivedScreen() {
   const router = useRouter();
   const { activeTrip, riderInfo, clearTrip, apiClient } = useTrip();
+  const { location } = useDriverStatus();
   const [loading, setLoading] = useState(false);
 
   const handleStartTrip = async () => {
@@ -63,12 +66,19 @@ export default function ArrivedScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.mapPlaceholder}>
-        <Text style={styles.mapLabel}>Waiting for rider</Text>
+      <View style={styles.mapContainer}>
+        <TripMap
+          driver={location}
+          pickup={
+            activeTrip
+              ? { latitude: activeTrip.pickup_lat, longitude: activeTrip.pickup_lng }
+              : null
+          }
+        />
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.status}>You've arrived</Text>
+        <Text style={styles.status}>You&apos;ve arrived</Text>
         <Text style={styles.hint}>
           Waiting for {riderInfo?.name ?? 'the rider'} at the pickup location
         </Text>
@@ -100,11 +110,7 @@ export default function ArrivedScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  mapPlaceholder: {
-    flex: 1, backgroundColor: colors.gray100,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  mapLabel: { ...typography.h3, color: colors.textMuted },
+  mapContainer: { flex: 1, backgroundColor: colors.gray100 },
   card: {
     backgroundColor: colors.white,
     borderTopLeftRadius: borderRadius.xl, borderTopRightRadius: borderRadius.xl,
