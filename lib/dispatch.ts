@@ -20,7 +20,7 @@ import {
   addExcludedDriver,
   getExcludedDrivers,
 } from '@/lib/redis';
-import { sendPushNotification, rideRequestNotification } from '@/lib/push';
+import { sendPushNotification, rideRequestNotification, rideAssignedNotification, pushTokenForDriverRow, pushTokenForUser } from '@/lib/push';
 
 export const OFFER_TIMEOUT_SEC = 15;
 export const MAX_ESCALATIONS = 3;
@@ -130,17 +130,11 @@ export async function offerRideToDriver(
   // Set offer in Redis (15s TTL — auto-expires if driver doesn't respond)
   await setDriverOffer(rideId, driver.driver_id, OFFER_TIMEOUT_SEC);
 
-  // Send push notification to driver
+  // Send push notification to driver (resolves drivers.id → auth user id).
   const supabase = createServiceClient();
-  const { data: pushToken } = await supabase
-    .from('push_tokens')
-    .select('token')
-    .eq('user_id', driver.driver_id)
-    .eq('role', 'driver')
-    .single();
-
-  if (pushToken?.token) {
-    await sendPushNotification(rideRequestNotification(pushToken.token, {
+  const offerToken = await pushTokenForDriverRow(driver.driver_id);
+  if (offerToken) {
+    await sendPushNotification(rideRequestNotification(offerToken, {
       rideId,
       pickupAddress: ride.pickup_address,
       dropoffAddress: ride.dropoff_address,
@@ -277,6 +271,39 @@ export async function finalizeAssignment(rideId: string, driverId: string): Prom
       plate: vehicle?.plate_number ?? '',
     },
   });
+
+  // Notify both sides. The realtime subscription already drives the in-app UI;
+  // push reaches a backgrounded driver/rider. Non-blocking.
+  try {
+    const driverToken = await pushTokenForDriverRow(driverId);
+    if (driverToken) {
+      const { data: ride } = await supabase
+        .from('rides')
+        .select('rider_id, pickup_address, dropoff_address, estimated_fare, distance_km')
+        .eq('id', rideId)
+        .single();
+      if (ride) {
+        await sendPushNotification(rideRequestNotification(driverToken, {
+          rideId,
+          pickupAddress: ride.pickup_address,
+          dropoffAddress: ride.dropoff_address,
+          estimatedFare: Number(ride.estimated_fare),
+          distanceKm: Number(ride.distance_km ?? 0),
+        }));
+        const riderToken = ride.rider_id ? await pushTokenForUser(ride.rider_id, 'rider') : null;
+        if (riderToken) {
+          await sendPushNotification(rideAssignedNotification(riderToken, {
+            rideId,
+            driverName: drivers.full_name,
+            vehicleDesc: vehicle ? `${vehicle.color} ${vehicle.make} ${vehicle.model}` : 'your ride',
+            etaMinutes: 5,
+          }));
+        }
+      }
+    }
+  } catch (pushErr) {
+    console.error('[dispatch] assignment push failed (non-blocking):', pushErr);
+  }
 
   const driverResult: NearbyDriver = {
     driver_id: driverId,

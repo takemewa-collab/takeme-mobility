@@ -82,6 +82,36 @@ export async function sendBatchPushNotifications(messages: PushMessage[]): Promi
   }
 }
 
+// push_tokens.user_id is the AUTH user id, but dispatch works with drivers.id.
+// Resolve the auth id first, then read the token — otherwise the lookup never
+// matches and no driver push is ever sent.
+export async function pushTokenForDriverRow(driverRowId: string): Promise<string | null> {
+  const { createServiceClient } = await import('@/lib/supabase/service');
+  const svc = createServiceClient();
+  const { data: driver } = await svc
+    .from('drivers')
+    .select('auth_user_id')
+    .eq('id', driverRowId)
+    .maybeSingle();
+  if (!driver?.auth_user_id) return null;
+  return pushTokenForUser(driver.auth_user_id, 'driver');
+}
+
+export async function pushTokenForUser(
+  userId: string,
+  role: 'driver' | 'rider',
+): Promise<string | null> {
+  const { createServiceClient } = await import('@/lib/supabase/service');
+  const svc = createServiceClient();
+  const { data } = await svc
+    .from('push_tokens')
+    .select('token')
+    .eq('user_id', userId)
+    .eq('role', role)
+    .maybeSingle();
+  return data?.token ?? null;
+}
+
 // Notification templates
 export function rideRequestNotification(pushToken: string, rideData: {
   rideId: string;

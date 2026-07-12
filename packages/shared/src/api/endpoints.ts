@@ -32,6 +32,7 @@ export const API = {
   DRIVER_APPROVE: '/api/driver/approve',
   DRIVER_STATUS: '/api/driver/status',
   DRIVER_LOCATION: '/api/driver/location',
+  PUSH_TOKEN: '/api/push-token',
   DRIVER_RIDES: '/api/driver/rides',
   DRIVER_DASHBOARD: '/api/driver/dashboard',
   DRIVER_DOCUMENTS: '/api/driver/documents',
