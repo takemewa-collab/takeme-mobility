@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createApiClient } from '@/lib/supabase/api';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/mobile/payment-sheet
@@ -9,6 +10,10 @@ import { NextRequest, NextResponse } from 'next/server';
 //   3. Create PaymentIntent (manual capture — authorize only)
 //
 // Returns: { clientSecret, ephemeralKey, customerId, paymentIntentId }
+//
+// Auth: requires the caller's Supabase bearer token. The ephemeral key grants
+// access to a customer's saved payment methods, so the customer is derived from
+// the authenticated user — never from a client-supplied id.
 // ═══════════════════════════════════════════════════════════════════════════
 
 const STRIPE_API = 'https://api.stripe.com/v1';
@@ -67,14 +72,18 @@ async function findOrCreateCustomer(riderId: string, email?: string): Promise<st
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { riderId, amount, email } = body;
+    const { user } = await createApiClient(request);
+    if (!user) {
+      return NextResponse.json({ error: 'Sign in to set up payment.' }, { status: 401 });
+    }
 
-    if (!riderId || !amount) {
-      return NextResponse.json(
-        { error: 'riderId and amount are required' },
-        { status: 400 },
-      );
+    const body = await request.json();
+    const { amount, email } = body;
+    // The customer is the authenticated user; ignore any client-supplied id.
+    const riderId = user.id;
+
+    if (!amount) {
+      return NextResponse.json({ error: 'amount is required' }, { status: 400 });
     }
 
     const amountCents = Math.round(parseFloat(amount) * 100);
