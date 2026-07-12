@@ -6,14 +6,19 @@ module.exports = ({ config }) => ({
   ...config,
   name: 'Takeme Driver',
   slug: 'takeme-driver',
-  owner: 'takememobilitys-organization',
-  version: '0.1.0',
+  owner: 'takememobility-app',
+  version: '1.0.0',
   runtimeVersion: {
     policy: 'appVersion',
   },
   orientation: 'portrait',
   icon: './assets/icon.png',
   scheme: 'takeme-driver',
+  extra: {
+    eas: {
+      projectId: '0cc33074-ead9-4e4b-92bc-06077d4b205d',
+    },
+  },
   userInterfaceStyle: 'light',
   newArchEnabled: true,
   splash: {
@@ -80,11 +85,6 @@ module.exports = ({ config }) => ({
     ],
     'expo-task-manager',
   ],
-  extra: {
-    eas: {
-      projectId: '54d340d6-471d-4b38-aa64-31c8cb0cf354',
-    },
-  },
   experiments: {
     typedRoutes: true,
   },

@@ -82,18 +82,8 @@ export default function DriverAccountScreen() {
           </View>
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Vehicle</Text>
-          <MenuItem label="Vehicle Info" subtitle="Manage your vehicle details" />
-          <MenuItem label="Documents" subtitle="View uploaded documents" />
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Payments</Text>
-          <MenuItem label="Payout Method" subtitle="Bank account, Takeme Card" />
-          <MenuItem label="Tax Documents" subtitle="1099 and tax information" />
-        </View>
-
+        {/* Vehicle and payout self-service ship in the next release; until the
+            screens exist we don't show doors that open onto "Coming soon". */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Support</Text>
           <MenuItem label="Help" subtitle="FAQ and support" onPress={() => Linking.openURL('mailto:support@takememobility.com')} />
@@ -112,9 +102,9 @@ export default function DriverAccountScreen() {
   );
 }
 
-function MenuItem({ label, subtitle, onPress }: { label: string; subtitle: string; onPress?: () => void }) {
+function MenuItem({ label, subtitle, onPress }: { label: string; subtitle: string; onPress: () => void }) {
   return (
-    <Pressable style={styles.menuItem} onPress={onPress ?? (() => Alert.alert(label, 'Coming soon'))}>
+    <Pressable style={styles.menuItem} onPress={onPress}>
       <View>
         <Text style={styles.menuLabel}>{label}</Text>
         <Text style={styles.menuSubtitle}>{subtitle}</Text>
