@@ -84,6 +84,13 @@ module.exports = ({ config }) => ({
       },
     ],
     'expo-task-manager',
+    [
+      '@sentry/react-native/expo',
+      {
+        organization: 'takeme-mobility',
+        project: 'takeme-driver',
+      },
+    ],
   ],
   experiments: {
     typedRoutes: true,
