@@ -31,7 +31,8 @@
         "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyAAzHRMlXeeVY7F9ttuGoqaBQCF-wpzLK8",
         "EXPO_PUBLIC_API_BASE_URL": "https://takememobility.com",
         "EXPO_PUBLIC_AUTH_MODE": "dev",
-        "EXPO_PUBLIC_SENTRY_DSN": "https://f17a133f5906081702668774e991d336@o4511724768788480.ingest.us.sentry.io/4511725006946304"
+        "EXPO_PUBLIC_SENTRY_DSN": "https://f17a133f5906081702668774e991d336@o4511724768788480.ingest.us.sentry.io/4511725006946304",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
       }
     },
     "production": {
@@ -44,7 +45,8 @@
         "EXPO_PUBLIC_AUTH_MODE": "production",
         "EXPO_PUBLIC_SENTRY_DSN": "https://f17a133f5906081702668774e991d336@o4511724768788480.ingest.us.sentry.io/4511725006946304",
         "SENTRY_ORG": "takeme-mobility",
-        "SENTRY_PROJECT": "takeme-driver"
+        "SENTRY_PROJECT": "takeme-driver",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
       }
     }
   },
