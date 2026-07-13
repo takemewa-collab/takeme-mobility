@@ -162,5 +162,5 @@ const styles = StyleSheet.create({
     alignItems: 'center', paddingVertical: spacing.md,
   },
   signOutText: { ...typography.bodyBold, color: colors.error },
-  deleteText: { ...typography.body, color: '#DC2626' },
+  deleteText: { ...typography.body, color: colors.textSecondary },
 });

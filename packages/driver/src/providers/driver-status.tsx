@@ -112,7 +112,7 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
           foregroundService: {
             notificationTitle: 'Takeme Driver',
             notificationBody: "You're online and receiving ride requests",
-            notificationColor: '#10B981',
+            notificationColor: '#111111',
           },
           showsBackgroundLocationIndicator: true,
         });

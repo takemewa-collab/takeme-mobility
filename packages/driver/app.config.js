@@ -24,7 +24,7 @@ module.exports = ({ config }) => ({
   splash: {
     image: './assets/splash.png',
     resizeMode: 'contain',
-    backgroundColor: '#0F172A',
+    backgroundColor: '#111111',
   },
   ios: {
     supportsTablet: false,
@@ -48,7 +48,7 @@ module.exports = ({ config }) => ({
   android: {
     adaptiveIcon: {
       foregroundImage: './assets/adaptive-icon.png',
-      backgroundColor: '#0F172A',
+      backgroundColor: '#111111',
     },
     package: 'com.takememobility.driver',
     config: {
@@ -80,7 +80,7 @@ module.exports = ({ config }) => ({
       'expo-notifications',
       {
         icon: './assets/notification-icon.png',
-        color: '#0F172A',
+        color: '#111111',
       },
     ],
     'expo-task-manager',
