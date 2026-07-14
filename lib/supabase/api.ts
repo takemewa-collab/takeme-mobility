@@ -1,6 +1,9 @@
 import { createServerClient } from '@supabase/ssr';
+import type { User } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import type { NextRequest } from 'next/server';
+
+import { verifyMintedBearer } from '@/lib/auth/verify-bearer';
 
 /**
  * Supabase client for API routes that the mobile apps call.
@@ -41,6 +44,26 @@ export async function createApiClient(request: NextRequest) {
       },
     },
   });
+
+  // Platform-minted tokens (Clerk exchange) verify locally — no GoTrue round
+  // trip, and PostgREST still receives the same bearer for RLS. Ordinary
+  // Supabase session tokens fall through to the usual lookup.
+  if (token) {
+    const minted = await verifyMintedBearer(token);
+    if (minted) {
+      const user = {
+        id: minted.id,
+        aud: 'authenticated',
+        role: 'authenticated',
+        phone: minted.phone ?? undefined,
+        email: minted.email ?? undefined,
+        app_metadata: { provider: 'clerk' },
+        user_metadata: {},
+        created_at: '',
+      } as unknown as User;
+      return { supabase, user };
+    }
+  }
 
   const { data, error } = token
     ? await supabase.auth.getUser(token)

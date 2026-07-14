@@ -1,4 +1,6 @@
+import { createClerkClient } from '@clerk/backend';
 import { NextRequest, NextResponse } from 'next/server';
+import { verifyMintedBearer } from '@/lib/auth/verify-bearer';
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
 
@@ -22,6 +24,10 @@ async function resolveUserId(request: NextRequest): Promise<string | null> {
     : null;
 
   if (token) {
+    // Platform-minted (Clerk exchange) tokens verify locally.
+    const minted = await verifyMintedBearer(token);
+    if (minted) return minted.id;
+
     const svc = createServiceClient();
     const { data, error } = await svc.auth.getUser(token);
     if (error || !data.user) return null;
@@ -42,6 +48,21 @@ export async function POST(request: NextRequest) {
     }
 
     const svc = createServiceClient();
+
+    // If this account came through Clerk, delete the Clerk user too so the
+    // person is fully erased on both identity systems (5.1.1(v)).
+    const { data: link } = await svc
+      .from('clerk_links')
+      .select('clerk_id')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (link?.clerk_id && process.env.CLERK_SECRET_KEY) {
+      const clerk = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
+      await clerk.users.deleteUser(link.clerk_id).catch((err) => {
+        console.error('[account/delete] clerk deleteUser failed (continuing):', err);
+      });
+    }
+
     const { error } = await svc.auth.admin.deleteUser(userId);
     if (error) {
       console.error('[account/delete] deleteUser failed:', error.message);
