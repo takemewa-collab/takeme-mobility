@@ -1,6 +1,5 @@
-import { createClerkClient } from '@clerk/backend';
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyMintedBearer } from '@/lib/auth/verify-bearer';
+import { deleteClerkUser, isClerkToken, resolveClerkBearer } from '@/lib/auth/clerk';
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
 
@@ -24,9 +23,11 @@ async function resolveUserId(request: NextRequest): Promise<string | null> {
     : null;
 
   if (token) {
-    // Platform-minted (Clerk exchange) tokens verify locally.
-    const minted = await verifyMintedBearer(token);
-    if (minted) return minted.id;
+    // Clerk session tokens resolve to their shadow Supabase user.
+    if (isClerkToken(token)) {
+      const user = await resolveClerkBearer(token);
+      return user?.id ?? null;
+    }
 
     const svc = createServiceClient();
     const { data, error } = await svc.auth.getUser(token);
@@ -57,8 +58,7 @@ export async function POST(request: NextRequest) {
       .eq('user_id', userId)
       .maybeSingle();
     if (link?.clerk_id && process.env.CLERK_SECRET_KEY) {
-      const clerk = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
-      await clerk.users.deleteUser(link.clerk_id).catch((err) => {
+      await deleteClerkUser(link.clerk_id).catch((err) => {
         console.error('[account/delete] clerk deleteUser failed (continuing):', err);
       });
     }
