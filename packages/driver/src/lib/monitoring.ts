@@ -7,7 +7,7 @@ export function initMonitoring() {
   if (!DSN) return;
   Sentry.init({
     dsn: DSN,
-    environment: process.env.EXPO_PUBLIC_AUTH_MODE === 'production' ? 'production' : 'development',
+    environment: __DEV__ ? 'development' : 'production',
     tracesSampleRate: 0.2,
     sendDefaultPii: false,
   });

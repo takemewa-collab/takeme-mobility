@@ -15,9 +15,10 @@
         "EXPO_PUBLIC_SUPABASE_URL": "https://oapzrnnfisxekjbhdimr.supabase.co",
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9hcHpybm5maXN4ZWtqYmhkaW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1NTE5MzcsImV4cCI6MjA5OTEyNzkzN30.F5eppQxuRNjcF5wQXMVFNHVXaB7yiy0jfl4FM6lQ4RA",
         "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyAAzHRMlXeeVY7F9ttuGoqaBQCF-wpzLK8",
-        "EXPO_PUBLIC_API_BASE_URL": "https://takememobility.com",
-        "EXPO_PUBLIC_AUTH_MODE": "dev",
-        "EXPO_PUBLIC_SENTRY_DSN": "https://f17a133f5906081702668774e991d336@o4511724768788480.ingest.us.sentry.io/4511725006946304"
+        "EXPO_PUBLIC_API_BASE_URL": "https://www.takememobility.com",
+        "EXPO_PUBLIC_AUTH_MODE": "clerk",
+        "EXPO_PUBLIC_SENTRY_DSN": "https://f17a133f5906081702668774e991d336@o4511724768788480.ingest.us.sentry.io/4511725006946304",
+        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsudGFrZW1lbW9iaWxpdHkuY29tJA=="
       }
     },
     "preview": {
@@ -29,10 +30,11 @@
         "EXPO_PUBLIC_SUPABASE_URL": "https://oapzrnnfisxekjbhdimr.supabase.co",
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9hcHpybm5maXN4ZWtqYmhkaW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1NTE5MzcsImV4cCI6MjA5OTEyNzkzN30.F5eppQxuRNjcF5wQXMVFNHVXaB7yiy0jfl4FM6lQ4RA",
         "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyAAzHRMlXeeVY7F9ttuGoqaBQCF-wpzLK8",
-        "EXPO_PUBLIC_API_BASE_URL": "https://takememobility.com",
-        "EXPO_PUBLIC_AUTH_MODE": "dev",
+        "EXPO_PUBLIC_API_BASE_URL": "https://www.takememobility.com",
+        "EXPO_PUBLIC_AUTH_MODE": "clerk",
         "EXPO_PUBLIC_SENTRY_DSN": "https://f17a133f5906081702668774e991d336@o4511724768788480.ingest.us.sentry.io/4511725006946304",
-        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true",
+        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsudGFrZW1lbW9iaWxpdHkuY29tJA=="
       }
     },
     "production": {
@@ -41,12 +43,13 @@
         "EXPO_PUBLIC_SUPABASE_URL": "https://oapzrnnfisxekjbhdimr.supabase.co",
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9hcHpybm5maXN4ZWtqYmhkaW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1NTE5MzcsImV4cCI6MjA5OTEyNzkzN30.F5eppQxuRNjcF5wQXMVFNHVXaB7yiy0jfl4FM6lQ4RA",
         "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyAAzHRMlXeeVY7F9ttuGoqaBQCF-wpzLK8",
-        "EXPO_PUBLIC_API_BASE_URL": "https://takememobility.com",
-        "EXPO_PUBLIC_AUTH_MODE": "production",
+        "EXPO_PUBLIC_API_BASE_URL": "https://www.takememobility.com",
+        "EXPO_PUBLIC_AUTH_MODE": "clerk",
         "EXPO_PUBLIC_SENTRY_DSN": "https://f17a133f5906081702668774e991d336@o4511724768788480.ingest.us.sentry.io/4511725006946304",
         "SENTRY_ORG": "takeme-mobility",
         "SENTRY_PROJECT": "takeme-driver",
-        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true",
+        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsudGFrZW1lbW9iaWxpdHkuY29tJA=="
       }
     }
   },

@@ -4,15 +4,35 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
-import { Session, User } from '@supabase/supabase-js';
-import { ApiClient, API } from '@takeme/shared';
-import { useSupabase } from './supabase';
+import {
+  ClerkProvider,
+  useAuth as useClerkSession,
+  useSignIn,
+  useSignUp,
+} from '@clerk/clerk-expo';
+import { tokenCache } from '@clerk/clerk-expo/token-cache';
+import { CLERK_PUBLISHABLE_KEY } from '@/lib/clerk';
+
+/**
+ * Clerk owns identity and OTP delivery (real SMS — no Twilio, no mock codes),
+ * and Supabase accepts the Clerk session token natively via third-party auth.
+ * The only platform hop left is /api/auth/profile, which ensures the shadow
+ * Supabase user and returns its id — the id drivers.auth_user_id keys on.
+ */
+
+export type DriverUser = {
+  /** Shadow Supabase auth user id (drivers.auth_user_id), not the Clerk id. */
+  id: string;
+  phone: string | null;
+  email: string | null;
+  full_name: string | null;
+};
 
 interface AuthState {
-  user: User | null;
-  session: Session | null;
+  user: DriverUser | null;
   loading: boolean;
   initialized: boolean;
 }
@@ -20,7 +40,7 @@ interface AuthState {
 interface AuthActions {
   sendOtp: (phone: string) => Promise<{ success: boolean; error?: string }>;
   verifyOtp: (phone: string, code: string) => Promise<{ success: boolean; error?: string }>;
-  // Temporary email OTP fallback — remove once AWS SMS Production Access is approved
+  /** Email one-time code — an alternative to phone for drivers without SMS. */
   sendEmailOtp: (email: string) => Promise<{ success: boolean; error?: string }>;
   verifyEmailOtp: (email: string, code: string) => Promise<{ success: boolean; error?: string }>;
   signOut: () => Promise<void>;
@@ -30,262 +50,226 @@ type AuthContextValue = AuthState & AuthActions;
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-const DEV_OTP = '123456';
-const AUTH_MODE = process.env.EXPO_PUBLIC_AUTH_MODE ?? 'dev';
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL!;
 
-// ---------------------------------------------------------------------------
-// Dev helpers
-// ---------------------------------------------------------------------------
-function createDevUser(phone: string): User {
-  const digits = phone.replace(/\D/g, '');
-  const id = `dev-driver-${digits}`;
-  return {
-    id,
-    app_metadata: { provider: 'phone', role: 'driver' },
-    user_metadata: { phone, full_name: `Driver ${digits.slice(-4)}` },
-    aud: 'authenticated',
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    phone,
-    email: `driver_${digits}@dev.takememobility.com`,
-    role: 'authenticated',
-    confirmation_sent_at: undefined,
-    confirmed_at: new Date().toISOString(),
-    last_sign_in_at: new Date().toISOString(),
-    factors: [],
-    identities: [],
-  } as unknown as User;
+/** One line out of Clerk's error array, readable enough to show a driver. */
+function clerkError(e: unknown): string {
+  const err = e as { errors?: { longMessage?: string; message?: string }[] };
+  return err?.errors?.[0]?.longMessage ?? err?.errors?.[0]?.message ?? 'Something went wrong.';
 }
 
-function createDevSession(user: User): Session {
-  return {
-    access_token: `dev-token-${user.id}`,
-    refresh_token: `dev-refresh-${user.id}`,
-    expires_in: 86400,
-    expires_at: Math.floor(Date.now() / 1000) + 86400,
-    token_type: 'bearer',
-    user,
-  };
-}
+type ProfileResponse = {
+  user: { id: string; phone: string | null; email: string | null; fullName: string | null };
+};
 
-// ---------------------------------------------------------------------------
-// Dev auth provider — no network calls, code 123456 always works
-// ---------------------------------------------------------------------------
-function DevAuthProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<AuthState>({
-    user: null, session: null, loading: false, initialized: true,
-  });
+function useClerkAuthValue(): AuthContextValue {
+  const { isLoaded, isSignedIn, getToken, signOut: clerkSignOut } = useClerkSession();
+  const { signIn, setActive: setActiveSignIn } = useSignIn();
+  const { signUp, setActive: setActiveSignUp } = useSignUp();
+  const [user, setUser] = useState<DriverUser | null>(null);
+  const [profileResolved, setProfileResolved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // Which flow the pending OTP belongs to — Clerk splits new vs. returning.
+  const flow = useRef<'signIn' | 'signUp'>('signIn');
 
-  const sendOtp = useCallback(async (phone: string) => {
-    console.log(`[auth:dev:driver] OTP "sent" to ${phone}. Use code: ${DEV_OTP}`);
-    return { success: true };
-  }, []);
-
-  const verifyOtp = useCallback(async (phone: string, code: string) => {
-    if (code !== DEV_OTP) {
-      return { success: false, error: `Wrong code. Enter ${DEV_OTP}` };
-    }
-    const user = createDevUser(phone);
-    const session = createDevSession(user);
-    console.log('[auth:dev:driver] Signed in as:', user.id);
-    setState({ user, session, loading: false, initialized: true });
-    return { success: true };
-  }, []);
-
-  const sendEmailOtp = useCallback(async (email: string) => {
-    console.log(`[auth:dev:driver] Email OTP "sent" to ${email}. Use code: ${DEV_OTP}`);
-    return { success: true };
-  }, []);
-
-  const verifyEmailOtp = useCallback(async (email: string, code: string) => {
-    if (code !== DEV_OTP) {
-      return { success: false, error: `Wrong code. Enter ${DEV_OTP}` };
-    }
-    const digits = email.replace(/[^a-z0-9]/gi, '').slice(0, 8);
-    const user = createDevUser(`email-${digits}`);
-    user.email = email;
-    const session = createDevSession(user);
-    console.log('[auth:dev:driver] Signed in via email as:', user.id, email);
-    setState({ user, session, loading: false, initialized: true });
-    return { success: true };
-  }, []);
-
-  const signOut = useCallback(async () => {
-    console.log('[auth:dev:driver] Signed out');
-    setState({ user: null, session: null, loading: false, initialized: true });
-  }, []);
-
-  const value = useMemo(
-    () => ({ ...state, sendOtp, verifyOtp, sendEmailOtp, verifyEmailOtp, signOut }),
-    [state, sendOtp, verifyOtp, sendEmailOtp, verifyEmailOtp, signOut],
-  );
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-}
-
-// ---------------------------------------------------------------------------
-// Production auth provider — real OTP via API server
-// ---------------------------------------------------------------------------
-function ProductionAuthProvider({ children }: { children: React.ReactNode }) {
-  const supabase = useSupabase();
-  const [state, setState] = useState<AuthState>({
-    user: null,
-    session: null,
-    loading: true,
-    initialized: false,
-  });
-
-  const apiClient = useMemo(
-    () =>
-      new ApiClient({
-        baseUrl: process.env.EXPO_PUBLIC_API_BASE_URL!,
-        getAccessToken: async () => {
-          const { data } = await supabase.auth.getSession();
-          return data.session?.access_token ?? null;
-        },
-      }),
-    [supabase],
-  );
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setState({
-        user: session?.user ?? null,
-        session,
-        loading: false,
-        initialized: true,
-      });
+  /**
+   * Ensures the shadow Supabase user and loads the platform identity. The
+   * returned id is the Supabase auth user id — what drivers.auth_user_id
+   * and trip queries key on — not the Clerk id.
+   */
+  const loadProfile = useCallback(async (): Promise<void> => {
+    const clerkToken = await getToken();
+    if (!clerkToken) throw new Error('no Clerk session');
+    const response = await fetch(`${API_BASE_URL}/api/auth/profile`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${clerkToken}`, Accept: 'application/json' },
     });
+    if (!response.ok) throw new Error(`profile failed (${response.status})`);
+    const body = (await response.json()) as ProfileResponse;
+    setUser({
+      id: body.user.id,
+      phone: body.user.phone,
+      email: body.user.email,
+      full_name: body.user.fullName,
+    });
+    setProfileResolved(true);
+  }, [getToken]);
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        setState((prev) => ({
-          ...prev,
-          user: session?.user ?? null,
-          session,
-          loading: false,
-        }));
-      },
-    );
-
-    return () => subscription.unsubscribe();
-  }, [supabase]);
+  // Restore on launch: Clerk rehydrates its session from SecureStore; we
+  // resolve it to the platform identity. Failure = signed out, never a hang.
+  useEffect(() => {
+    if (!isLoaded) return;
+    if (!isSignedIn) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset on sign-out, not a render loop
+      setUser(null);
+      setProfileResolved(false);
+      return;
+    }
+    loadProfile().catch(() => setProfileResolved(true));
+  }, [isLoaded, isSignedIn, loadProfile]);
 
   const sendOtp = useCallback(
     async (phone: string) => {
+      if (!signIn || !signUp) return { success: false, error: 'Auth is still loading.' };
+      setBusy(true);
       try {
-        setState((prev) => ({ ...prev, loading: true }));
-        await apiClient.post(API.AUTH_SEND_OTP, { phone });
+        const attempt = await signIn.create({ identifier: phone });
+        const factor = attempt.supportedFirstFactors?.find(
+          (f): f is Extract<typeof f, { strategy: 'phone_code' }> => f.strategy === 'phone_code',
+        );
+        if (!factor) return { success: false, error: 'Phone sign-in is not enabled.' };
+        await signIn.prepareFirstFactor({
+          strategy: 'phone_code',
+          phoneNumberId: factor.phoneNumberId,
+        });
+        flow.current = 'signIn';
         return { success: true };
-      } catch (err: unknown) {
-        const message =
-          err instanceof Error ? err.message : 'Failed to send OTP';
-        return { success: false, error: message };
+      } catch {
+        // Unknown identifier → this is a brand-new driver.
+        try {
+          await signUp.create({ phoneNumber: phone });
+          await signUp.preparePhoneNumberVerification();
+          flow.current = 'signUp';
+          return { success: true };
+        } catch (e) {
+          return { success: false, error: clerkError(e) };
+        }
       } finally {
-        setState((prev) => ({ ...prev, loading: false }));
+        setBusy(false);
       }
     },
-    [apiClient],
+    [signIn, signUp],
   );
 
   const verifyOtp = useCallback(
-    async (phone: string, code: string) => {
+    async (_phone: string, code: string) => {
+      setBusy(true);
       try {
-        setState((prev) => ({ ...prev, loading: true }));
-        const result = await apiClient.post<{
-          access_token: string;
-          refresh_token: string;
-        }>(API.AUTH_VERIFY_OTP, { phone, code });
-
-        const { error } = await supabase.auth.setSession({
-          access_token: result.access_token,
-          refresh_token: result.refresh_token,
-        });
-
-        if (error) {
-          return { success: false, error: error.message };
+        if (flow.current === 'signUp') {
+          if (!signUp || !setActiveSignUp) return { success: false, error: 'Auth is still loading.' };
+          const result = await signUp.attemptPhoneNumberVerification({ code });
+          if (result.status !== 'complete' || !result.createdSessionId) {
+            return { success: false, error: 'That code is wrong or has expired.' };
+          }
+          await setActiveSignUp({ session: result.createdSessionId });
+        } else {
+          if (!signIn || !setActiveSignIn) return { success: false, error: 'Auth is still loading.' };
+          const result = await signIn.attemptFirstFactor({ strategy: 'phone_code', code });
+          if (result.status !== 'complete' || !result.createdSessionId) {
+            return { success: false, error: 'That code is wrong or has expired.' };
+          }
+          await setActiveSignIn({ session: result.createdSessionId });
         }
+        // Block until the platform identity exists so the next screen can load.
+        await loadProfile();
         return { success: true };
-      } catch (err: unknown) {
-        const message =
-          err instanceof Error ? err.message : 'Failed to verify OTP';
-        return { success: false, error: message };
+      } catch (e) {
+        return { success: false, error: clerkError(e) };
       } finally {
-        setState((prev) => ({ ...prev, loading: false }));
+        setBusy(false);
       }
     },
-    [apiClient, supabase],
+    [signIn, signUp, setActiveSignIn, setActiveSignUp, loadProfile],
   );
 
-  // Temporary email OTP fallback via direct Supabase — remove once AWS SMS Production Access is approved
   const sendEmailOtp = useCallback(
     async (email: string) => {
+      if (!signIn || !signUp) return { success: false, error: 'Auth is still loading.' };
+      setBusy(true);
       try {
-        setState((prev) => ({ ...prev, loading: true }));
-        const { error } = await supabase.auth.signInWithOtp({ email, options: { shouldCreateUser: false } });
-        if (error) return { success: false, error: error.message };
+        const attempt = await signIn.create({ identifier: email });
+        const factor = attempt.supportedFirstFactors?.find(
+          (f): f is Extract<typeof f, { strategy: 'email_code' }> => f.strategy === 'email_code',
+        );
+        if (!factor) return { success: false, error: 'Email sign-in is not enabled.' };
+        await signIn.prepareFirstFactor({
+          strategy: 'email_code',
+          emailAddressId: factor.emailAddressId,
+        });
+        flow.current = 'signIn';
         return { success: true };
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : 'Failed to send email OTP';
-        return { success: false, error: message };
+      } catch {
+        try {
+          await signUp.create({ emailAddress: email });
+          await signUp.prepareEmailAddressVerification({ strategy: 'email_code' });
+          flow.current = 'signUp';
+          return { success: true };
+        } catch (e) {
+          return { success: false, error: clerkError(e) };
+        }
       } finally {
-        setState((prev) => ({ ...prev, loading: false }));
+        setBusy(false);
       }
     },
-    [supabase],
+    [signIn, signUp],
   );
 
   const verifyEmailOtp = useCallback(
-    async (email: string, code: string) => {
+    async (_email: string, code: string) => {
+      setBusy(true);
       try {
-        setState((prev) => ({ ...prev, loading: true }));
-        const { data, error } = await supabase.auth.verifyOtp({
-          email, token: code, type: 'email',
-        });
-        if (error) return { success: false, error: error.message };
-        console.log('[auth:driver] Verified via email, user:', data.user?.id);
+        if (flow.current === 'signUp') {
+          if (!signUp || !setActiveSignUp) return { success: false, error: 'Auth is still loading.' };
+          const result = await signUp.attemptEmailAddressVerification({ code });
+          if (result.status !== 'complete' || !result.createdSessionId) {
+            return { success: false, error: 'That code is wrong or has expired.' };
+          }
+          await setActiveSignUp({ session: result.createdSessionId });
+        } else {
+          if (!signIn || !setActiveSignIn) return { success: false, error: 'Auth is still loading.' };
+          const result = await signIn.attemptFirstFactor({ strategy: 'email_code', code });
+          if (result.status !== 'complete' || !result.createdSessionId) {
+            return { success: false, error: 'That code is wrong or has expired.' };
+          }
+          await setActiveSignIn({ session: result.createdSessionId });
+        }
+        await loadProfile();
         return { success: true };
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : 'Failed to verify email OTP';
-        return { success: false, error: message };
+      } catch (e) {
+        return { success: false, error: clerkError(e) };
       } finally {
-        setState((prev) => ({ ...prev, loading: false }));
+        setBusy(false);
       }
     },
-    [supabase],
+    [signIn, signUp, setActiveSignIn, setActiveSignUp, loadProfile],
   );
 
   const signOut = useCallback(async () => {
-    setState((prev) => ({ ...prev, loading: true }));
-    await supabase.auth.signOut();
-    setState({
-      user: null,
-      session: null,
-      loading: false,
-      initialized: true,
-    });
-  }, [supabase]);
+    setUser(null);
+    setProfileResolved(false);
+    await clerkSignOut().catch(() => {});
+  }, [clerkSignOut]);
 
-  const value = useMemo(
-    () => ({ ...state, sendOtp, verifyOtp, sendEmailOtp, verifyEmailOtp, signOut }),
-    [state, sendOtp, verifyOtp, sendEmailOtp, verifyEmailOtp, signOut],
-  );
+  // initialized: Clerk restored its session AND (if signed in) the profile
+  // request settled — the layouts gate every redirect on this flag.
+  const initialized = isLoaded && (!isSignedIn || profileResolved);
 
-  return (
-    <AuthContext.Provider value={value}>
-      {children}
-    </AuthContext.Provider>
+  return useMemo(
+    () => ({
+      user: isSignedIn ? user : null,
+      loading: busy,
+      initialized,
+      sendOtp,
+      verifyOtp,
+      sendEmailOtp,
+      verifyEmailOtp,
+      signOut,
+    }),
+    [isSignedIn, user, busy, initialized, sendOtp, verifyOtp, sendEmailOtp, verifyEmailOtp, signOut],
   );
 }
 
-// ---------------------------------------------------------------------------
-// Router: picks dev or production based on EXPO_PUBLIC_AUTH_MODE
-// ---------------------------------------------------------------------------
+function ClerkBridge({ children }: { children: React.ReactNode }) {
+  const value = useClerkAuthValue();
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  if (AUTH_MODE !== 'production') {
-    return <DevAuthProvider>{children}</DevAuthProvider>;
-  }
-  return <ProductionAuthProvider>{children}</ProductionAuthProvider>;
+  return (
+    <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY} tokenCache={tokenCache}>
+      <ClerkBridge>{children}</ClerkBridge>
+    </ClerkProvider>
+  );
 }
 
 export function useAuth(): AuthContextValue {

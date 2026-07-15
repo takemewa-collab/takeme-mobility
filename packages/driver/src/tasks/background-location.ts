@@ -1,13 +1,14 @@
 import * as TaskManager from 'expo-task-manager';
-import * as SecureStore from 'expo-secure-store';
 import { API } from '@takeme/shared';
+import { getClerkToken } from '@/lib/clerk';
 
 export const BACKGROUND_LOCATION_TASK = 'DRIVER_LOCATION_BROADCAST';
 
 /**
  * Background task that receives location updates and sends them to the API.
  * Defined at top level so expo-task-manager registers it before app mounts.
- * Includes auth token from SecureStore for authenticated API calls.
+ * Auth comes from the Clerk singleton, which restores the persisted session
+ * even on headless launches (see getClerkToken).
  */
 TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   if (error) {
@@ -36,20 +37,9 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     const apiBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
     if (!apiBaseUrl) return;
 
-    // Retrieve auth token from SecureStore
-    // Supabase stores session as JSON in SecureStore via the adapter
     let accessToken: string | null = null;
     try {
-      // Try common Supabase session key patterns
-      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
-      const ref = supabaseUrl.match(/https?:\/\/([^.]+)/)?.[1] ?? '';
-      const sessionKey = `sb-${ref}-auth-token`;
-      const sessionJson = await SecureStore.getItemAsync(sessionKey);
-      if (sessionJson) {
-        const parsed = JSON.parse(sessionJson);
-        // Supabase stores { access_token, refresh_token, ... } or session object
-        accessToken = parsed?.access_token ?? parsed?.currentSession?.access_token ?? null;
-      }
+      accessToken = await getClerkToken();
     } catch {
       // Token retrieval failed, send without auth (will get 401)
     }

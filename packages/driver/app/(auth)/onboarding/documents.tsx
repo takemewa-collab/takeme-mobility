@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ApiClient, API } from '@takeme/shared';
 import { Button } from '@/components/ui';
 import { useAuth } from '@/providers/auth';
-import { useSupabase } from '@/providers/supabase';
+import { getClerkToken } from '@/lib/clerk';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing, borderRadius } from '@/theme/spacing';
@@ -22,7 +22,6 @@ export default function DocumentsScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const { user } = useAuth();
-  const supabase = useSupabase();
   const [submitting, setSubmitting] = useState(false);
 
   const apiClient = useMemo(() => {
@@ -30,12 +29,9 @@ export default function DocumentsScreen() {
     if (!baseUrl) return null;
     return new ApiClient({
       baseUrl,
-      getAccessToken: async () => {
-        const { data } = await supabase.auth.getSession();
-        return data.session?.access_token ?? null;
-      },
+      getAccessToken: getClerkToken,
     });
-  }, [supabase]);
+  }, []);
 
   const handleSubmit = async () => {
     if (submitting) return;

@@ -11,6 +11,7 @@ import React, {
 import { AppState } from 'react-native';
 import type { Ride, RideStatus } from '@takeme/shared';
 import { ApiClient, API } from '@takeme/shared';
+import { getClerkToken } from '@/lib/clerk';
 import { useSupabase } from './supabase';
 import { useAuth } from './auth';
 
@@ -81,12 +82,9 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     if (!baseUrl) return null;
     return new ApiClient({
       baseUrl,
-      getAccessToken: async () => {
-        const { data } = await supabase.auth.getSession();
-        return data.session?.access_token ?? null;
-      },
+      getAccessToken: getClerkToken,
     });
-  }, [supabase]);
+  }, []);
 
   // Fetch rider info for the active trip
   const fetchRiderInfo = useCallback(async (riderId: string) => {

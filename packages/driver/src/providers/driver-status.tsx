@@ -10,7 +10,7 @@ import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import type { DriverStatus, Coordinates } from '@takeme/shared';
 import { ApiClient, API, DRIVER_LOCATION_INTERVAL_MS } from '@takeme/shared';
-import { useSupabase } from './supabase';
+import { getClerkToken } from '@/lib/clerk';
 import { useAuth } from './auth';
 
 const BACKGROUND_LOCATION_TASK = 'DRIVER_LOCATION_BROADCAST';
@@ -32,8 +32,7 @@ interface DriverStatusContextValue extends DriverStatusState {
 const DriverStatusContext = createContext<DriverStatusContextValue | null>(null);
 
 export function DriverStatusProvider({ children }: { children: React.ReactNode }) {
-  const supabase = useSupabase();
-  const { session } = useAuth();
+  const { user } = useAuth();
 
   const [state, setState] = useState<DriverStatusState>({
     status: 'offline',
@@ -48,12 +47,9 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
     () =>
       new ApiClient({
         baseUrl: process.env.EXPO_PUBLIC_API_BASE_URL!,
-        getAccessToken: async () => {
-          const { data } = await supabase.auth.getSession();
-          return data.session?.access_token ?? null;
-        },
+        getAccessToken: getClerkToken,
       }),
-    [supabase],
+    [],
   );
 
   // Request location permissions on mount
@@ -75,7 +71,7 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
 
   // Fetch current driver status on login
   useEffect(() => {
-    if (!session) return;
+    if (!user) return;
 
     (async () => {
       try {
@@ -87,7 +83,7 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
         // If driver profile doesn't exist yet (onboarding), default offline
       }
     })();
-  }, [session, apiClient]);
+  }, [user, apiClient]);
 
   const goOnline = useCallback(async () => {
     if (!state.isLocationPermitted) {

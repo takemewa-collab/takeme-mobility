@@ -10,13 +10,14 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '@/providers/auth';
+import { getClerkToken } from '@/lib/clerk';
 import { formatPhone, API } from '@takeme/shared';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing, borderRadius } from '@/theme/spacing';
 
 export default function DriverAccountScreen() {
-  const { user, session, signOut } = useAuth();
+  const { user, signOut } = useAuth();
 
   const handleSignOut = () => {
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
@@ -28,11 +29,12 @@ export default function DriverAccountScreen() {
   const deleteAccount = async () => {
     try {
       const baseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
+      const token = await getClerkToken();
       const res = await fetch(`${baseUrl}${API.ACCOUNT_DELETE}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -62,8 +64,8 @@ export default function DriverAccountScreen() {
     );
   };
 
-  const phone = user?.phone ?? user?.user_metadata?.phone;
-  const name = user?.user_metadata?.full_name;
+  const phone = user?.phone;
+  const name = user?.full_name;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>

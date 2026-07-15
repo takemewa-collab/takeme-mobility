@@ -16,6 +16,7 @@
     "build:prod": "eas build --profile production --platform ios"
   },
   "dependencies": {
+    "@clerk/clerk-expo": "^2.19.31",
     "@gorhom/bottom-sheet": "^5.1.1",
     "@sentry/react-native": "~7.2.0",
     "@supabase/supabase-js": "^2.100.1",
