@@ -14,6 +14,8 @@ import {
   useSignUp,
 } from '@clerk/clerk-expo';
 import { tokenCache } from '@clerk/clerk-expo/token-cache';
+import type { SignUpResource } from '@clerk/types';
+import * as Crypto from 'expo-crypto';
 import { CLERK_PUBLISHABLE_KEY } from '@/lib/clerk';
 
 /**
@@ -62,6 +64,35 @@ type ProfileResponse = {
   user: { id: string; phone: string | null; email: string | null; fullName: string | null };
 };
 
+/**
+ * Clerk only marks a sign-up complete when every required attribute exists.
+ * The production instance requires a password even for OTP users, which left
+ * phone verifications stuck at `missing_requirements` — the code screen
+ * looped forever. Nobody ever types this password (codes are the only
+ * sign-in path), so satisfy the requirement with a random one and finish.
+ */
+async function finishSignUp(
+  signUp: SignUpResource,
+): Promise<{ sessionId: string | null; error?: string }> {
+  if (signUp.status === 'complete' && signUp.createdSessionId) {
+    return { sessionId: signUp.createdSessionId };
+  }
+  let current = signUp;
+  if (current.status === 'missing_requirements' && current.missingFields.includes('password')) {
+    const password = Array.from(Crypto.getRandomBytes(24), (b) =>
+      b.toString(16).padStart(2, '0'),
+    ).join('');
+    current = await current.update({ password });
+  }
+  if (current.status === 'complete' && current.createdSessionId) {
+    return { sessionId: current.createdSessionId };
+  }
+  const missing = current.missingFields?.length
+    ? `missing: ${current.missingFields.join(', ')}`
+    : `status: ${current.status ?? 'unknown'}`;
+  return { sessionId: null, error: `Could not finish sign-up (${missing}).` };
+}
+
 function useClerkAuthValue(): AuthContextValue {
   const { isLoaded, isSignedIn, getToken, signOut: clerkSignOut } = useClerkSession();
   const { signIn, setActive: setActiveSignIn } = useSignIn();
@@ -100,7 +131,7 @@ function useClerkAuthValue(): AuthContextValue {
   useEffect(() => {
     if (!isLoaded) return;
     if (!isSignedIn) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset on sign-out, not a render loop
+       
       setUser(null);
       setProfileResolved(false);
       return;
@@ -148,10 +179,11 @@ function useClerkAuthValue(): AuthContextValue {
         if (flow.current === 'signUp') {
           if (!signUp || !setActiveSignUp) return { success: false, error: 'Auth is still loading.' };
           const result = await signUp.attemptPhoneNumberVerification({ code });
-          if (result.status !== 'complete' || !result.createdSessionId) {
-            return { success: false, error: 'That code is wrong or has expired.' };
+          const finished = await finishSignUp(result);
+          if (!finished.sessionId) {
+            return { success: false, error: finished.error ?? 'That code is wrong or has expired.' };
           }
-          await setActiveSignUp({ session: result.createdSessionId });
+          await setActiveSignUp({ session: finished.sessionId });
         } else {
           if (!signIn || !setActiveSignIn) return { success: false, error: 'Auth is still loading.' };
           const result = await signIn.attemptFirstFactor({ strategy: 'phone_code', code });
@@ -211,10 +243,11 @@ function useClerkAuthValue(): AuthContextValue {
         if (flow.current === 'signUp') {
           if (!signUp || !setActiveSignUp) return { success: false, error: 'Auth is still loading.' };
           const result = await signUp.attemptEmailAddressVerification({ code });
-          if (result.status !== 'complete' || !result.createdSessionId) {
-            return { success: false, error: 'That code is wrong or has expired.' };
+          const finished = await finishSignUp(result);
+          if (!finished.sessionId) {
+            return { success: false, error: finished.error ?? 'That code is wrong or has expired.' };
           }
-          await setActiveSignUp({ session: result.createdSessionId });
+          await setActiveSignUp({ session: finished.sessionId });
         } else {
           if (!signIn || !setActiveSignIn) return { success: false, error: 'Auth is still loading.' };
           const result = await signIn.attemptFirstFactor({ strategy: 'email_code', code });
