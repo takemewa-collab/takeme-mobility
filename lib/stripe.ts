@@ -14,7 +14,7 @@ function getSecretKey(): string {
   return key;
 }
 
-async function stripeRequest(
+export async function stripeRequest(
   path: string,
   params: Record<string, string>,
   method: 'POST' | 'GET' = 'POST',
@@ -46,7 +46,7 @@ async function stripeRequest(
   return data;
 }
 
-async function stripeGet(path: string): Promise<Record<string, unknown>> {
+export async function stripeGet(path: string): Promise<Record<string, unknown>> {
   const key = getSecretKey();
   const res = await fetch(`${STRIPE_API}${path}`, {
     method: 'GET',
@@ -271,4 +271,46 @@ export async function verifyWebhookSignature(
   if (age > 300) throw new Error('Webhook timestamp too old');
 
   return JSON.parse(payload);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Mobile wallet helpers — shared by /api/mobile/* payment routes
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Same rider→customer mapping the mobile payment-sheet route uses
+ *  (metadata rider_id search), tolerant of a missing email. */
+export async function findOrCreateMobileCustomer(
+  riderId: string,
+  email?: string | null,
+): Promise<string> {
+  const search = await stripeGet(
+    `/customers/search?query=${encodeURIComponent(`metadata["rider_id"]:"${riderId}"`)}`,
+  );
+  const found = (search as { data?: { id: string }[] }).data;
+  if (found && found.length > 0) return found[0].id;
+
+  const params: Record<string, string> = {
+    'metadata[rider_id]': riderId,
+    'metadata[app]': 'takeme-rider',
+  };
+  if (email) params['email'] = email;
+  const customer = await stripeRequest('/customers', params);
+  return (customer as { id: string }).id;
+}
+
+/** Mobile PaymentSheet ephemeral key — the one Stripe call that REQUIRES an
+ *  explicit Stripe-Version header. */
+export async function createEphemeralKey(customerId: string): Promise<string> {
+  const res = await fetch('https://api.stripe.com/v1/ephemeral_keys', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY ?? ''}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Stripe-Version': '2024-12-18.acacia',
+    },
+    body: new URLSearchParams({ customer: customerId }).toString(),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+  return data.secret as string;
 }
