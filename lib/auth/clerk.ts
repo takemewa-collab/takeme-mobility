@@ -23,6 +23,7 @@ export type ClerkIdentity = {
   phone: string | null;
   email: string | null;
   fullName: string | null;
+  avatarUrl: string | null;
 };
 
 function clerkClient() {
@@ -66,8 +67,32 @@ export async function loadClerkIdentity(clerkId: string): Promise<ClerkIdentity>
     user.emailAddresses[0]?.emailAddress ??
     null;
   const fullName = [user.firstName, user.lastName].filter(Boolean).join(' ') || null;
+  const avatarUrl = user.hasImage ? user.imageUrl : null;
 
-  return { clerkId, phone, email, fullName };
+  return { clerkId, phone, email, fullName, avatarUrl };
+}
+
+/**
+ * Mirrors the Clerk identity into the rider's platform record so admin and
+ * driver surfaces see the current name and photo. Clerk stays the source of
+ * truth; this runs on every profile resolve (sign-in and cold start).
+ */
+export async function syncRiderRecord(userId: string, identity: ClerkIdentity): Promise<void> {
+  const supabase = createServiceClient();
+  const patch: Record<string, string | null> = {
+    id: userId,
+    // Clerk owns profile photos outright — null here means "photo removed".
+    avatar_url: identity.avatarUrl,
+    updated_at: new Date().toISOString(),
+  };
+  // Contact/name fields only ever improve: never clobber a pre-Clerk value
+  // with a null from a sparser Clerk record.
+  if (identity.fullName) patch.full_name = identity.fullName;
+  if (identity.email) patch.email = identity.email;
+  if (identity.phone) patch.phone = identity.phone.replace(/^\+/, '');
+
+  const { error } = await supabase.from('riders').upsert(patch, { onConflict: 'id' });
+  if (error) console.error('rider profile sync failed:', error.message);
 }
 
 /**

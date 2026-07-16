@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   ensureShadowUser,
   loadClerkIdentity,
+  syncRiderRecord,
   verifyClerkToken,
 } from '@/lib/auth/clerk';
 
@@ -31,6 +32,9 @@ export async function POST(request: NextRequest) {
 
     const identity = await loadClerkIdentity(sub);
     const userId = await ensureShadowUser(identity);
+    // Keep the platform's rider record in step with Clerk (name, contact,
+    // photo) so admin and driver surfaces show current identity.
+    await syncRiderRecord(userId, identity);
 
     return NextResponse.json({
       user: {
@@ -38,6 +42,7 @@ export async function POST(request: NextRequest) {
         phone: identity.phone,
         email: identity.email,
         fullName: identity.fullName,
+        avatarUrl: identity.avatarUrl,
       },
     });
   } catch (error) {
