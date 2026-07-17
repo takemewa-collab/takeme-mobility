@@ -69,21 +69,56 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
     })();
   }, []);
 
-  // Fetch current driver status on login
+  // Fetch current driver status on login. The endpoint wraps the record in
+  // { driver: { status } } — parsing that wrong left the toggle stuck on
+  // "offline" after every app restart.
   useEffect(() => {
     if (!user) return;
 
     (async () => {
       try {
-        const result = await apiClient.get<{ status: DriverStatus }>(
+        const result = await apiClient.get<{ driver: { status: DriverStatus } }>(
           API.DRIVER_STATUS,
         );
-        setState((prev) => ({ ...prev, status: result.status }));
+        if (result?.driver?.status) {
+          setState((prev) => ({ ...prev, status: result.driver.status }));
+        }
       } catch {
         // If driver profile doesn't exist yet (onboarding), default offline
       }
     })();
   }, [user, apiClient]);
+
+  // Foreground position watcher: keeps `location` live for the in-app map
+  // whenever the driver is online. Publishing to the platform stays with the
+  // background task; this only feeds the local UI (blue dot, map centering).
+  useEffect(() => {
+    if (state.status === 'offline' || !state.isLocationPermitted) return;
+
+    let sub: Location.LocationSubscription | null = null;
+    let alive = true;
+    (async () => {
+      sub = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.Balanced,
+          timeInterval: DRIVER_LOCATION_INTERVAL_MS,
+          distanceInterval: 10,
+        },
+        (fix) => {
+          if (!alive) return;
+          setState((prev) => ({
+            ...prev,
+            location: { latitude: fix.coords.latitude, longitude: fix.coords.longitude },
+          }));
+        },
+      );
+    })();
+
+    return () => {
+      alive = false;
+      sub?.remove();
+    };
+  }, [state.status, state.isLocationPermitted]);
 
   const goOnline = useCallback(async () => {
     if (!state.isLocationPermitted) {

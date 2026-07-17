@@ -26,9 +26,6 @@ export default function ActiveTripScreen() {
   const minutes = Math.floor(elapsed / 60);
   const seconds = elapsed % 60;
 
-  const totalMin = Number(activeTrip?.duration_min ?? 10);
-  const progress = Math.min((elapsed / 60 / totalMin) * 100, 95);
-
   const handleComplete = async () => {
     if (!activeTrip || !apiClient || completing) return;
     setCompleting(true);
@@ -72,10 +69,8 @@ export default function ActiveTripScreen() {
           </View>
         </View>
 
-        <View style={styles.progressTrack}>
-          <View style={[styles.progressFill, { width: `${progress}%` }]} />
-        </View>
-
+        {/* The elapsed timer above is real; a simulated "progress" bar is not.
+            Route-based progress returns when it can come from live GPS. */}
         <View style={styles.stats}>
           <View style={styles.stat}>
             <Text style={styles.statValue}>

@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, Alert } from 'react-native';
+import { View, Text, StyleSheet, Alert, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { formatRating, API } from '@takeme/shared';
 import { Button } from '@/components/ui';
 import { TripMap } from '@/components/trip-map';
+import { TripMessagesSheet } from '@/components/trip-messages';
 import { useDriverStatus } from '@/providers/driver-status';
 import { useTrip } from '@/providers/trip';
 import { colors } from '@/theme/colors';
@@ -16,6 +17,7 @@ export default function NavigateScreen() {
   const { activeTrip, riderInfo, apiClient } = useTrip();
   const { location } = useDriverStatus();
   const [loading, setLoading] = useState(false);
+  const [messagesOpen, setMessagesOpen] = useState(false);
 
   const handleArrived = async () => {
     if (!activeTrip || !apiClient || loading) return;
@@ -67,6 +69,10 @@ export default function NavigateScreen() {
           </View>
         </View>
 
+        <Pressable style={styles.messageLink} onPress={() => setMessagesOpen(true)}>
+          <Text style={styles.messageLinkText}>Message rider</Text>
+        </Pressable>
+
         <Button
           title={loading ? 'Updating...' : 'Arrived at Pickup'}
           onPress={handleArrived}
@@ -75,6 +81,14 @@ export default function NavigateScreen() {
           disabled={loading}
         />
       </View>
+
+      {activeTrip ? (
+        <TripMessagesSheet
+          rideId={activeTrip.id}
+          visible={messagesOpen}
+          onClose={() => setMessagesOpen(false)}
+        />
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -98,5 +112,7 @@ const styles = StyleSheet.create({
   },
   avatarText: { ...typography.bodyBold, color: colors.white },
   riderName: { ...typography.bodyBold, color: colors.text },
+  messageLink: { alignSelf: 'flex-start', paddingVertical: 6, marginBottom: 12 },
+  messageLinkText: { ...typography.bodyBold, color: colors.text, textDecorationLine: 'underline' },
   riderRating: { ...typography.caption, color: colors.warning, marginTop: 2 },
 });

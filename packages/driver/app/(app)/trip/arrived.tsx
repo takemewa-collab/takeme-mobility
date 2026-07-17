@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, Pressable, Alert, Linking } from 'react-native';
+import { View, Text, StyleSheet, Pressable, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { API } from '@takeme/shared';
 import { Button } from '@/components/ui';
 import { TripMap } from '@/components/trip-map';
+import { TripMessagesSheet } from '@/components/trip-messages';
 import { useDriverStatus } from '@/providers/driver-status';
 import { useTrip } from '@/providers/trip';
 import { colors } from '@/theme/colors';
@@ -16,6 +17,7 @@ export default function ArrivedScreen() {
   const { activeTrip, riderInfo, clearTrip, apiClient } = useTrip();
   const { location } = useDriverStatus();
   const [loading, setLoading] = useState(false);
+  const [messagesOpen, setMessagesOpen] = useState(false);
 
   const handleStartTrip = async () => {
     if (!activeTrip || !apiClient || loading) return;
@@ -48,21 +50,6 @@ export default function ArrivedScreen() {
     }
   };
 
-  const handleCall = () => {
-    if (riderInfo?.phone) {
-      Linking.openURL(`tel:${riderInfo.phone}`);
-    } else {
-      Alert.alert('Contact', 'Rider phone number not available');
-    }
-  };
-
-  const handleMessage = () => {
-    if (riderInfo?.phone) {
-      Linking.openURL(`sms:${riderInfo.phone}`);
-    } else {
-      Alert.alert('Contact', 'Rider phone number not available');
-    }
-  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -83,12 +70,10 @@ export default function ArrivedScreen() {
           Waiting for {riderInfo?.name ?? 'the rider'} at the pickup location
         </Text>
 
+        {/* Contact happens in-app; phone numbers stay private on both sides. */}
         <View style={styles.actions}>
-          <Pressable style={styles.contactButton} onPress={handleCall}>
-            <Text style={styles.contactText}>Call Rider</Text>
-          </Pressable>
-          <Pressable style={styles.contactButton} onPress={handleMessage}>
-            <Text style={styles.contactText}>Message</Text>
+          <Pressable style={styles.contactButton} onPress={() => setMessagesOpen(true)}>
+            <Text style={styles.contactText}>Message rider</Text>
           </Pressable>
         </View>
 
@@ -104,6 +89,14 @@ export default function ArrivedScreen() {
           <Text style={styles.cancelText}>Cancel Ride</Text>
         </Pressable>
       </View>
+
+      {activeTrip ? (
+        <TripMessagesSheet
+          rideId={activeTrip.id}
+          visible={messagesOpen}
+          onClose={() => setMessagesOpen(false)}
+        />
+      ) : null}
     </SafeAreaView>
   );
 }

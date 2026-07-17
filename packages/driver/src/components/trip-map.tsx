@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import MapView, { Marker, type LatLng } from 'react-native-maps';
 import { colors } from '@/theme/colors';
 
@@ -11,14 +11,6 @@ interface TripMapProps {
   /** Keep the camera glued to the driver (dashboard idle state). */
   followDriver?: boolean;
 }
-
-/** Downtown Seattle, shown only until the first real coordinate arrives. */
-const FALLBACK_REGION = {
-  latitude: 47.6062,
-  longitude: -122.3321,
-  latitudeDelta: 0.05,
-  longitudeDelta: 0.05,
-};
 
 const EDGE_PADDING = { top: 80, right: 60, bottom: 80, left: 60 };
 
@@ -49,15 +41,21 @@ export function TripMap({ driver, pickup, dropoff, followDriver = false }: TripM
     }
   }, [driver, pickup, dropoff, followDriver, points]);
 
+  // No real coordinate yet → an honest waiting state, never a fake city.
+  if (points.length === 0) {
+    return (
+      <View style={styles.waiting} accessibilityLabel="Waiting for your location">
+        <ActivityIndicator color={colors.textSecondary} />
+        <Text style={styles.waitingText}>Waiting for your location…</Text>
+      </View>
+    );
+  }
+
   return (
     <MapView
       ref={mapRef}
       style={StyleSheet.absoluteFill}
-      initialRegion={
-        points[0]
-          ? { ...points[0], latitudeDelta: 0.02, longitudeDelta: 0.02 }
-          : FALLBACK_REGION
-      }
+      initialRegion={{ ...points[0]!, latitudeDelta: 0.02, longitudeDelta: 0.02 }}
       showsCompass={false}
       toolbarEnabled={false}
       pitchEnabled={false}
@@ -77,6 +75,14 @@ export function TripMap({ driver, pickup, dropoff, followDriver = false }: TripM
 }
 
 const styles = StyleSheet.create({
+  waiting: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    backgroundColor: colors.background,
+  },
+  waitingText: { fontSize: 13, color: colors.textSecondary },
   driverDotOuter: {
     width: 22,
     height: 22,

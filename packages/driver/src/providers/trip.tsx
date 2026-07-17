@@ -24,7 +24,6 @@ const DRIVER_ACTIVE_STATUSES: RideStatus[] = [
 
 interface RiderInfo {
   name: string;
-  phone: string;
   rating: number;
 }
 
@@ -91,7 +90,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     try {
       const { data } = await supabase
         .from('riders')
-        .select('full_name, phone, rating')
+        .select('full_name, rating')
         .eq('id', riderId)
         .single();
 
@@ -100,7 +99,6 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
           type: 'SET_RIDER_INFO',
           info: {
             name: data.full_name ?? 'Rider',
-            phone: data.phone ?? '',
             rating: Number(data.rating ?? 5),
           },
         });
