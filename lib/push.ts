@@ -140,12 +140,16 @@ export function rideAssignedNotification(pushToken: string, data: {
   rideId: string;
   driverName: string;
   vehicleDesc: string;
-  etaMinutes: number;
+  /** Only present when computed from the driver's real position — never fabricated. */
+  etaMinutes?: number;
 }): PushMessage {
   return {
     to: pushToken,
     title: 'Driver on the way!',
-    body: `${data.driverName} in ${data.vehicleDesc} · ${data.etaMinutes} min away`,
+    body:
+      data.etaMinutes != null
+        ? `${data.driverName} in ${data.vehicleDesc} · ${data.etaMinutes} min away`
+        : `${data.driverName} in ${data.vehicleDesc}`,
     data: { type: 'driver_assigned', rideId: data.rideId },
     priority: 'high',
   };

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { createApiClient } from '@/lib/supabase/api';
 import { createServiceClient } from '@/lib/supabase/service';
 import { cacheDriverLocation } from '@/lib/redis';
-import { publishDriverLocation } from '@/lib/ably';
+import { publishRideLocation } from '@/lib/ably';
 import { rateLimit } from '@/lib/rate-limit';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -73,16 +73,27 @@ export async function POST(request: NextRequest) {
       });
     } catch { /* Redis cache is enhancement, not critical */ }
 
-    // 6. Publish to Ably for real-time rider tracking (<200ms)
+    // 6. Publish to Ably for real-time rider tracking (<200ms) — but ONLY
+    // while this driver is on an active ride, and only onto that ride's
+    // channel. Idle/available drivers are never streamed to anyone.
     try {
-      await publishDriverLocation({
-        driverId: driver.id,
-        lat: body.lat,
-        lng: body.lng,
-        heading: body.heading ?? null,
-        speedKmh: body.speedKmh ?? null,
-        timestamp: Date.now(),
-      });
+      const { data: activeRide } = await svc
+        .from('rides')
+        .select('id')
+        .eq('assigned_driver_id', driver.id)
+        .in('status', ['driver_assigned', 'driver_arriving', 'arrived', 'in_progress'])
+        .limit(1)
+        .maybeSingle();
+      if (activeRide) {
+        await publishRideLocation(activeRide.id, {
+          driverId: driver.id,
+          lat: body.lat,
+          lng: body.lng,
+          heading: body.heading ?? null,
+          speedKmh: body.speedKmh ?? null,
+          timestamp: Date.now(),
+        });
+      }
     } catch { /* Ably is enhancement, not critical */ }
 
     return NextResponse.json({ updated: true });

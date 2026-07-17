@@ -237,35 +237,21 @@ export async function POST(request: NextRequest) {
       console.warn('Payment setup failed (ride still created):', payErr);
     }
 
-    // 6. Start dispatch queue (non-blocking, retries in background)
-    // Fire-and-forget: the queue retries with backoff and updates ride status
-    let assignedDriver: { name: string; vehicle: string; plate: string } | null = null;
+    // 6. Start the offer pipeline (non-blocking). Drivers must explicitly
+    // accept an offer — rides are NEVER auto-assigned here. The rider app
+    // learns about the assignment through realtime/push once a driver accepts.
     try {
-      // First attempt is synchronous for fast matching
-      const { assignDriver } = await import('@/lib/dispatch');
-      const dispatch = await assignDriver(rideData.id);
-      if (dispatch.success && dispatch.driver) {
-        assignedDriver = {
-          name: dispatch.driver.driver_name,
-          vehicle: `${dispatch.driver.vehicle_make} ${dispatch.driver.vehicle_model}`,
-          plate: dispatch.driver.plate_number,
-        };
-      } else {
-        // No immediate match — start background retry queue
-        dispatchWithRetry(rideData.id).catch(err =>
-          console.error('[dispatch-queue] Background dispatch failed:', err)
-        );
-      }
+      await dispatchWithRetry(rideData.id);
     } catch (dispatchErr) {
-      console.warn('Auto-dispatch failed, starting retry queue:', dispatchErr);
-      dispatchWithRetry(rideData.id).catch(() => {});
+      console.warn('Dispatch enqueue failed (queue will retry):', dispatchErr);
     }
 
-    // 7. Return ride + payment + driver
+    // 7. Return ride + payment. `driver` is always null at creation time —
+    // assignment only exists after a driver accepts the offer.
     return NextResponse.json({
       ride: {
         id: rideData.id,
-        status: assignedDriver ? 'driver_assigned' : rideData.status,
+        status: rideData.status,
         estimatedFare: rideData.estimated_fare,
         currency: rideData.currency,
         requestedAt: rideData.requested_at,
@@ -275,7 +261,7 @@ export async function POST(request: NextRequest) {
         clientSecret,
         paymentIntentId,
       } : null,
-      driver: assignedDriver,
+      driver: null,
     }, { status: 201 });
   } catch (err) {
     console.error('POST /api/rides/create failed:', err);

@@ -245,13 +245,20 @@ export async function processRedisQueue(maxItems: number = 10): Promise<{
   return { processed, offered, failed };
 }
 
-// Legacy export
-export async function dispatchWithRetry(rideId: string): Promise<{ assigned: boolean; retries: number; error?: string }> {
-  const { findCandidates: fc, assignDriver } = await import('@/lib/dispatch');
-  const result = await assignDriver(rideId);
-  if (result.success) {
-    return { assigned: true, retries: 1 };
-  }
+/**
+ * Kick off dispatch for a new ride. Prefers the QStash worker; when QStash is
+ * not configured, runs one offer cycle inline and falls back to the Redis
+ * queue. Every path goes through `dispatchRide` — an OFFER the driver must
+ * accept. Nothing here assigns a driver directly.
+ */
+export async function dispatchWithRetry(rideId: string): Promise<{ offered: boolean; error?: string }> {
+  const { publishDispatchEvent } = await import('@/lib/qstash');
+  const queuedViaQstash = await publishDispatchEvent(rideId, 0);
+  if (queuedViaQstash) return { offered: true };
+
+  const result = await dispatchRide(rideId, 0);
+  if (result.action === 'offered') return { offered: true };
+
   await queueRideForDispatch(rideId);
-  return { assigned: false, retries: 0, error: 'Queued for background dispatch' };
+  return { offered: false, error: result.error ?? 'Queued for background dispatch' };
 }

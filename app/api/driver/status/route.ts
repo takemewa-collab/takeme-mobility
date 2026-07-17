@@ -28,12 +28,22 @@ export async function PUT(request: NextRequest) {
     const svc = createServiceClient();
     const { data: driver, error: driverError } = await svc
       .from('drivers')
-      .select('id, status')
+      .select('id, status, full_name, phone')
       .eq('auth_user_id', user.id)
       .single();
 
     if (driverError || !driver) {
       return NextResponse.json({ error: 'Driver profile not found' }, { status: 404 });
+    }
+
+    // Production safeguard: a fixture-shaped driver can never go online.
+    if (body.status === 'available') {
+      const { assertNotTestFixture } = await import('@/lib/security/fixtures');
+      assertNotTestFixture({
+        fullName: driver.full_name,
+        phone: driver.phone,
+        context: 'driver going available',
+      });
     }
 
     // Don't allow going available if currently on_trip

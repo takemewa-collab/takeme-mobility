@@ -56,6 +56,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'You are already an approved driver.' }, { status: 409 });
     }
 
+    // Production safeguard: fixture-shaped identities can never apply.
+    const { assertNotTestFixture } = await import('@/lib/security/fixtures');
+    assertNotTestFixture({
+      fullName: body.fullName,
+      phone: body.phone,
+      plateNumber: body.plateNumber,
+      context: 'driver application',
+    });
+
     // Insert application
     const { data: app, error: insertError } = await supabase
       .from('driver_applications')

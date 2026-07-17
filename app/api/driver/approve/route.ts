@@ -35,6 +35,20 @@ export async function POST(request: NextRequest) {
     if (!app) return NextResponse.json({ error: 'Application not found' }, { status: 404 });
     if (app.status === 'approved') return NextResponse.json({ error: 'Already approved' }, { status: 409 });
 
+    // Production safeguard: fixture-shaped identities can never be approved.
+    const { data: fullApp } = await svc
+      .from('driver_applications')
+      .select('full_name, phone, plate_number')
+      .eq('id', body.applicationId)
+      .single();
+    const { assertNotTestFixture } = await import('@/lib/security/fixtures');
+    assertNotTestFixture({
+      fullName: fullApp?.full_name,
+      phone: fullApp?.phone,
+      plateNumber: fullApp?.plate_number,
+      context: 'driver approval',
+    });
+
     // Approve
     await svc.from('driver_applications').update({
       status: 'approved',

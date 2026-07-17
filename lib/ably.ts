@@ -33,13 +33,15 @@ interface DriverLocationUpdate {
 }
 
 /**
- * Publish driver location to Ably channel (server-side).
- * Called from the driver location API endpoint after DB update.
+ * Publish the assigned driver's location onto the RIDE channel — never a
+ * driver-wide channel. Only participants of that ride can hold a token for
+ * `ride:{rideId}` (see /api/ably-token), so an idle or off-trip driver is
+ * never trackable, and access ends with the ride.
  */
-export async function publishDriverLocation(data: DriverLocationUpdate): Promise<void> {
+export async function publishRideLocation(rideId: string, data: DriverLocationUpdate): Promise<void> {
   try {
     const ably = getAblyServer();
-    const channel = ably.channels.get(`driver:${data.driverId}`);
+    const channel = ably.channels.get(`ride:${rideId}`);
     await channel.publish('location', data);
   } catch (err) {
     // Non-fatal — DB update already succeeded, Ably is enhancement
@@ -80,7 +82,9 @@ export async function createAblyToken(
   const token = await ably.auth.requestToken({
     clientId,
     capability: JSON.stringify(capability),
-    ttl: 60 * 60 * 1000, // 1h — client re-fetches from /api/ably-token
+    // Short-lived: access to a ride channel must lapse quickly after the
+    // ride completes or is cancelled. Clients re-fetch while a ride is live.
+    ttl: 10 * 60 * 1000, // 10 min
   });
   return token;
 }

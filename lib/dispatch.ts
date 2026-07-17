@@ -257,7 +257,8 @@ export async function finalizeAssignment(rideId: string, driverId: string): Prom
   const { cleanupDispatchState } = await import('@/lib/redis');
   await cleanupDispatchState(rideId);
 
-  // Log event
+  // Log event. The plate is intentionally NOT recorded here — it reaches the
+  // assigned rider only through the authorized ride payload after acceptance.
   await supabase.from('ride_events').insert({
     ride_id: rideId,
     event_type: 'driver_assigned',
@@ -268,7 +269,6 @@ export async function finalizeAssignment(rideId: string, driverId: string): Prom
       driver_id: driverId,
       driver_name: drivers.full_name,
       vehicle: vehicle ? `${vehicle.make} ${vehicle.model}` : 'Unknown',
-      plate: vehicle?.plate_number ?? '',
     },
   });
 
@@ -279,7 +279,7 @@ export async function finalizeAssignment(rideId: string, driverId: string): Prom
     if (driverToken) {
       const { data: ride } = await supabase
         .from('rides')
-        .select('rider_id, pickup_address, dropoff_address, estimated_fare, distance_km')
+        .select('rider_id, pickup_lat, pickup_lng, pickup_address, dropoff_address, estimated_fare, distance_km')
         .eq('id', rideId)
         .single();
       if (ride) {
@@ -292,11 +292,14 @@ export async function finalizeAssignment(rideId: string, driverId: string): Prom
         }));
         const riderToken = ride.rider_id ? await pushTokenForUser(ride.rider_id, 'rider') : null;
         if (riderToken) {
+          // ETA only when we can compute it from the driver's real position —
+          // never a made-up number. Omitted otherwise.
+          const etaMinutes = await estimateEtaMinutes(driverId, ride.pickup_lat, ride.pickup_lng);
           await sendPushNotification(rideAssignedNotification(riderToken, {
             rideId,
             driverName: drivers.full_name,
             vehicleDesc: vehicle ? `${vehicle.color} ${vehicle.make} ${vehicle.model}` : 'your ride',
-            etaMinutes: 5,
+            etaMinutes: etaMinutes ?? undefined,
           }));
         }
       }
@@ -323,12 +326,38 @@ export async function finalizeAssignment(rideId: string, driverId: string): Prom
   return { success: true, driver: driverResult };
 }
 
-// Legacy export for backward compatibility
-export async function assignDriver(rideId: string): Promise<AssignmentResult> {
-  const { candidates, ride } = await findCandidates(rideId);
-  if (candidates.length === 0 || !ride) {
-    return { success: false, driver: null, error: 'No drivers available' };
-  }
-  // Direct assignment (used for first sync attempt in ride creation)
-  return finalizeAssignment(rideId, candidates[0].driver_id);
+/**
+ * ETA from the driver's last known position to the pickup, straight-line at
+ * a conservative urban speed. Returns null when there is no fresh fix —
+ * callers must omit the ETA rather than invent one.
+ */
+export async function estimateEtaMinutes(
+  driverId: string,
+  pickupLat: number,
+  pickupLng: number,
+): Promise<number | null> {
+  const supabase = createServiceClient();
+  const { data } = await supabase
+    .from('driver_locations')
+    .select('location, updated_at')
+    .eq('driver_id', driverId)
+    .gte('updated_at', new Date(Date.now() - 60_000).toISOString())
+    .maybeSingle();
+  const coords = (data?.location as { coordinates?: number[] } | null)?.coordinates;
+  if (!coords || coords.length < 2) return null;
+
+  const [lng, lat] = coords;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(pickupLat - lat);
+  const dLng = toRad(pickupLng - lng);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat)) * Math.cos(toRad(pickupLat)) * Math.sin(dLng / 2) ** 2;
+  const meters = 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  // ~25 km/h effective urban speed ≈ 420 m/min, minimum 1 minute.
+  return Math.max(1, Math.round(meters / 420));
 }
+
+// NOTE: the legacy `assignDriver` direct-assignment path was removed on
+// purpose. Every ride goes through the offer pipeline (lib/dispatch-queue
+// `dispatchRide`): a driver must explicitly accept before assignment.

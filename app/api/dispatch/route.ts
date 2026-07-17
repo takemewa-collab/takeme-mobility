@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
-import { assignDriver } from '@/lib/dispatch';
+import { dispatchRide } from '@/lib/dispatch-queue';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/dispatch
-// Trigger driver assignment for a ride.
-// Called after ride creation or can be retried if no driver found initially.
+// (Re)trigger the OFFER pipeline for a ride that is still searching.
+// This never assigns a driver directly — it sends an offer that the driver
+// must explicitly accept via the driver app.
 // ═══════════════════════════════════════════════════════════════════════════
 
 const requestSchema = z.object({
@@ -39,32 +40,17 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
-    // 3. Attempt assignment
-    const result = await assignDriver(body.rideId);
-
-    if (!result.success) {
-      return NextResponse.json({
-        assigned: false,
-        error: result.error,
-      });
-    }
+    // 3. Run one offer cycle. Assignment happens only when a driver accepts.
+    const result = await dispatchRide(body.rideId, 0);
 
     return NextResponse.json({
-      assigned: true,
-      driver: {
-        id: result.driver!.driver_id,
-        name: result.driver!.driver_name,
-        rating: result.driver!.driver_rating,
-        vehicle: `${result.driver!.vehicle_make} ${result.driver!.vehicle_model}`,
-        color: result.driver!.vehicle_color,
-        plate: result.driver!.plate_number,
-        distanceMeters: Math.round(result.driver!.distance_m),
-        lat: result.driver!.lat,
-        lng: result.driver!.lng,
-      },
+      assigned: false,
+      offered: result.action === 'offered',
+      action: result.action,
+      error: result.error,
     });
   } catch (err) {
     console.error('POST /api/dispatch failed:', err);
-    return NextResponse.json({ error: 'Dispatch failed' }, { status: 500 });
+    return NextResponse.json({ error: 'Server error' }, { status: 500 });
   }
 }
