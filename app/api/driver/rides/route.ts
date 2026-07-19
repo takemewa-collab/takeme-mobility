@@ -36,7 +36,7 @@ export async function GET(request: NextRequest) {
         pickup_address, pickup_lat, pickup_lng,
         dropoff_address, dropoff_lat, dropoff_lng,
         vehicle_class, distance_km, duration_min,
-        estimated_fare, currency,
+        estimated_fare, currency, preferences,
         requested_at, driver_assigned_at
       `)
       .eq('assigned_driver_id', driver.id)
@@ -73,9 +73,17 @@ export async function GET(request: NextRequest) {
       .select('id, direction, route_point_id, flight_number, selection_method, snapshot')
       .eq('ride_id', ride.id);
 
+    // Preference projection: the driver sees the two booleans only — never
+    // the fallback strategy or any other rider-side detail.
+    const prefs = (ride.preferences ?? {}) as { pet_friendly?: boolean; women_preferred?: boolean };
+
     return NextResponse.json({
       ride: {
         ...ride,
+        preferences: {
+          pet_friendly: prefs.pet_friendly === true,
+          women_preferred: prefs.women_preferred === true,
+        },
         rider_name: rider?.full_name ?? 'Rider',
         rider_rating: rider?.rating ?? 5.0,
         route_points: routePoints ?? [],

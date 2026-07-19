@@ -29,6 +29,20 @@ export interface DriverCandidate {
   total_trips?: number;
   acceptance_rate?: number;
   trips_today?: number;
+  // Preference participation flags (service-role lookups in dispatch;
+  // absent for basic queries — treated as "not participating").
+  pet_friendly_opt_in?: boolean;
+  women_preferred_enrolled?: boolean;
+}
+
+export interface MatchOptions {
+  /**
+   * Women Preferred with fallback 'any_driver': enrolled drivers are
+   * stable-sorted to the front of the ranked list. This PRIORITIZES — it
+   * never excludes non-enrolled drivers (hard filtering only happens for
+   * fallback 'keep_looking', in lib/ride-preferences applyPreferenceFilters).
+   */
+  preferWomenEnrolled?: boolean;
 }
 
 interface ScoredDriver extends DriverCandidate {
@@ -105,6 +119,19 @@ function scoreDriver(
 }
 
 /**
+ * Stable partition: enrolled Women Preferred drivers first, everyone else
+ * after, relative order preserved within each group. Pure — unit tested.
+ */
+export function stablePreferEnrolled<T extends { women_preferred_enrolled?: boolean }>(
+  list: T[],
+): T[] {
+  return [
+    ...list.filter(d => d.women_preferred_enrolled === true),
+    ...list.filter(d => d.women_preferred_enrolled !== true),
+  ];
+}
+
+/**
  * Rank drivers by smart matching score.
  * Returns sorted array (best match first).
  */
@@ -113,13 +140,16 @@ export function rankDrivers(
   pickupLat: number,
   pickupLng: number,
   maxDistanceM: number = 10000,
+  opts: MatchOptions = {},
 ): ScoredDriver[] {
   if (candidates.length === 0) return [];
 
   const scored = candidates.map(d => scoreDriver(d, pickupLat, pickupLng, maxDistanceM));
   scored.sort((a, b) => b.score - a.score);
 
-  return scored;
+  // Women Preferred prioritization: a stable pass AFTER scoring, so enrolled
+  // drivers lead while score order is preserved within each group.
+  return opts.preferWomenEnrolled ? stablePreferEnrolled(scored) : scored;
 }
 
 /**
@@ -129,8 +159,9 @@ export function selectBestDriver(
   candidates: DriverCandidate[],
   pickupLat: number,
   pickupLng: number,
+  opts: MatchOptions = {},
 ): ScoredDriver | null {
-  const ranked = rankDrivers(candidates, pickupLat, pickupLng);
+  const ranked = rankDrivers(candidates, pickupLat, pickupLng, 10000, opts);
   return ranked[0] ?? null;
 }
 

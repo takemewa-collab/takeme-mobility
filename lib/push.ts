@@ -119,10 +119,12 @@ export function rideRequestNotification(pushToken: string, rideData: {
   dropoffAddress: string;
   estimatedFare: number;
   distanceKm: number;
+  /** Rider selected Pet Friendly — the driver must see this before accepting. */
+  petFriendly?: boolean;
 }): PushMessage {
   return {
     to: pushToken,
-    title: 'New Ride Request!',
+    title: rideData.petFriendly ? 'New Ride Request! · Pet Friendly' : 'New Ride Request!',
     body: `${rideData.pickupAddress} → ${rideData.dropoffAddress} · $${rideData.estimatedFare.toFixed(2)}`,
     data: {
       type: 'ride_request',
@@ -130,6 +132,7 @@ export function rideRequestNotification(pushToken: string, rideData: {
       pickupAddress: rideData.pickupAddress,
       dropoffAddress: rideData.dropoffAddress,
       estimatedFare: rideData.estimatedFare,
+      ...(rideData.petFriendly ? { petFriendly: true } : {}),
     },
     priority: 'high',
     channelId: 'ride-requests',

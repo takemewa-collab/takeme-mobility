@@ -19,6 +19,12 @@ import {
   validateAirportContext,
   type AirportSnapshot,
 } from '@/lib/airports/resolution';
+import {
+  getPreferenceConfig,
+  ridePreferencesSchema,
+  validatePreferences,
+  type StoredRidePreferences,
+} from '@/lib/ride-preferences';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/rides/create
@@ -87,6 +93,11 @@ const requestSchema = z.object({
   // Airport legs on this trip (at most a pickup and a dropoff context).
   // Absent → byte-identical legacy behavior.
   airportContexts: z.array(airportContextSchema).max(2).optional(),
+
+  // Ride preferences (Women Preferred / Pet Friendly). Validated against
+  // live server config below — a disabled preference is a 400, never a
+  // silent drop. Absent → byte-identical legacy behavior.
+  preferences: ridePreferencesSchema.optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -256,6 +267,31 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // 3c. Ride preferences — validate against live server config. Disabled or
+    // unknown preferences are rejected, never silently dropped. The pet fee is
+    // resolved from config (effective-date windowed), never client-supplied.
+    //
+    // SERVICE ANIMALS: service animals ride on every trip at no charge and
+    // need no option. The pet fee below is charged ONLY when the rider
+    // explicitly selected petFriendly — no other code path may add it.
+    let storedPreferences: StoredRidePreferences | null = null;
+    let petFee: number | null = null;
+
+    if (body.preferences && (body.preferences.womenPreferred || body.preferences.petFriendly)) {
+      // v1: default (NULL-state) market config — per-state resolution slots in
+      // here once the create flow carries a server-resolved state code.
+      const prefConfig = await getPreferenceConfig(createServiceClient(), null);
+      const validated = validatePreferences(prefConfig, body.preferences);
+      if (!validated.ok) {
+        return NextResponse.json(
+          { error: 'That option is not available here yet.' },
+          { status: 400 },
+        );
+      }
+      storedPreferences = validated.stored;
+      petFee = validated.petFee;
+    }
+
     // 4. Server-side fare verification — prevent client-side price manipulation
     const tier = TIERS[body.vehicleClass as VehicleClass];
     if (!tier) {
@@ -267,6 +303,7 @@ export async function POST(request: NextRequest) {
       currency: body.currency,
       stopCount,
       airportFees: airportFeeTotal,
+      ...(petFee !== null ? { petFee } : {}),
     });
 
     // Allow $1.00 tolerance for floating-point rounding differences
@@ -308,6 +345,7 @@ export async function POST(request: NextRequest) {
         total_fare: verifiedFare,
         currency: body.currency,
         expires_at: quoteExpiry,
+        ...(storedPreferences ? { preferences: storedPreferences } : {}),
       })
       .select('id')
       .single();
@@ -350,6 +388,7 @@ export async function POST(request: NextRequest) {
           estimated_fare: verifiedFare,
           currency: body.currency,
           surge_multiplier: body.surgeMultiplier,
+          ...(storedPreferences ? { preferences: storedPreferences } : {}),
         },
         p_points: orderedPoints.map((p) => ({
           point_type: p.type,
@@ -391,6 +430,7 @@ export async function POST(request: NextRequest) {
           estimated_fare: verifiedFare,
           currency: body.currency,
           surge_multiplier: body.surgeMultiplier,
+          ...(storedPreferences ? { preferences: storedPreferences } : {}),
           requested_at: new Date().toISOString(),
         })
         .select('id, status, estimated_fare, currency, requested_at')

@@ -12,7 +12,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { createServiceClient } from '@/lib/supabase/service';
-import { selectBestDriver, type DriverCandidate } from '@/lib/matching';
+import { selectBestDriver, stablePreferEnrolled, type DriverCandidate } from '@/lib/matching';
+import { applyPreferenceFilters, type StoredRidePreferences } from '@/lib/ride-preferences';
 import {
   setDriverOffer,
   getDriverOffer,
@@ -38,6 +39,10 @@ export interface NearbyDriver {
   heading: number | null;
   lat: number;
   lng: number;
+  // Preference participation flags — annotated in findCandidates via the
+  // service client (these columns are never client-readable).
+  pet_friendly_opt_in?: boolean;
+  women_preferred_enrolled?: boolean;
 }
 
 export interface AssignmentResult {
@@ -78,13 +83,13 @@ export async function findNearbyDrivers(
  */
 export async function findCandidates(rideId: string): Promise<{
   candidates: NearbyDriver[];
-  ride: { id: string; pickup_lat: number; pickup_lng: number; vehicle_class: string; status: string; pickup_address: string; dropoff_address: string; estimated_fare: number; distance_km: number } | null;
+  ride: { id: string; pickup_lat: number; pickup_lng: number; vehicle_class: string; status: string; pickup_address: string; dropoff_address: string; estimated_fare: number; distance_km: number; preferences: StoredRidePreferences } | null;
 }> {
   const supabase = createServiceClient();
 
   const { data: ride } = await supabase
     .from('rides')
-    .select('id, pickup_lat, pickup_lng, vehicle_class, status, pickup_address, dropoff_address, estimated_fare, distance_km')
+    .select('id, pickup_lat, pickup_lng, vehicle_class, status, pickup_address, dropoff_address, estimated_fare, distance_km, preferences')
     .eq('id', rideId)
     .single();
 
@@ -92,29 +97,98 @@ export async function findCandidates(rideId: string): Promise<{
     return { candidates: [], ride: null };
   }
 
+  const preferences: StoredRidePreferences = (ride.preferences ?? {}) as StoredRidePreferences;
+  const needsFlags =
+    preferences.pet_friendly === true || preferences.women_preferred === true;
+
   // Get excluded drivers (already timed out for this ride)
   const excluded = await getExcludedDrivers(rideId);
 
-  // Find nearby drivers with expanding radius
+  // Find nearby drivers with expanding radius. Preference filtering happens
+  // INSIDE the loop so a radius emptied by filters still expands outward.
   let drivers: NearbyDriver[] = [];
   const radii = [3000, 5000, 10000];
   for (const radius of radii) {
     drivers = await findNearbyDrivers(ride.pickup_lat, ride.pickup_lng, ride.vehicle_class as 'economy' | 'comfort' | 'premium', radius);
     // Filter out excluded drivers
     drivers = drivers.filter(d => !excluded.includes(d.driver_id));
+
+    if (needsFlags && drivers.length > 0) {
+      // Annotate preference flags via the service client (the RPC stays
+      // untouched; these columns are never client-readable) and apply the
+      // hard filters: pet_friendly always, women_preferred only when the
+      // rider chose 'keep_looking' — with 'any_driver' enrolled drivers are
+      // prioritized below, never required.
+      drivers = await annotatePreferenceFlags(drivers);
+      drivers = applyPreferenceFilters(drivers, preferences);
+    }
+
     if (drivers.length > 0) break;
   }
 
+  const preferWomenEnrolled =
+    preferences.women_preferred === true &&
+    (preferences.fallback ?? 'any_driver') === 'any_driver';
+
   // Rank by smart matching
   if (drivers.length > 1) {
-    const best = selectBestDriver(drivers as DriverCandidate[], ride.pickup_lat, ride.pickup_lng);
+    const best = selectBestDriver(
+      drivers as DriverCandidate[],
+      ride.pickup_lat,
+      ride.pickup_lng,
+      { preferWomenEnrolled },
+    );
     if (best) {
-      // Move best to front, keep rest as fallbacks
-      drivers = [best as unknown as NearbyDriver, ...drivers.filter(d => d.driver_id !== best.driver_id)];
+      // Move best to front, keep rest as fallbacks (enrolled-first when the
+      // rider asked for Women Preferred, so escalation honors the preference).
+      let rest = drivers.filter(d => d.driver_id !== best.driver_id);
+      if (preferWomenEnrolled) rest = stablePreferEnrolled(rest);
+      drivers = [best as unknown as NearbyDriver, ...rest];
     }
   }
 
-  return { candidates: drivers, ride };
+  return { candidates: drivers, ride: { ...ride, preferences } };
+}
+
+/**
+ * Fetch preference participation flags for candidate driver ids with the
+ * service role (never client-readable) and merge them onto the candidates.
+ * A driver missing from the lookup keeps `undefined` flags — treated as not
+ * participating.
+ */
+async function annotatePreferenceFlags(candidates: NearbyDriver[]): Promise<NearbyDriver[]> {
+  const supabase = createServiceClient();
+  const ids = candidates.map(c => c.driver_id);
+  const { data, error } = await supabase
+    .from('drivers')
+    .select('id, pet_friendly_opt_in, women_preferred_enrolled')
+    .in('id', ids);
+
+  if (error) {
+    // Fail closed for preference rides: without flags we cannot honor the
+    // preference, so no candidate qualifies this round.
+    console.error('[dispatch] preference flag lookup failed:', error.message);
+    return candidates.map(c => ({ ...c, pet_friendly_opt_in: false, women_preferred_enrolled: false }));
+  }
+
+  const flags = new Map(
+    (data ?? []).map(d => [
+      d.id as string,
+      {
+        pet: Boolean(d.pet_friendly_opt_in),
+        women: Boolean(d.women_preferred_enrolled),
+      },
+    ]),
+  );
+
+  return candidates.map(c => {
+    const f = flags.get(c.driver_id);
+    return {
+      ...c,
+      pet_friendly_opt_in: f?.pet ?? false,
+      women_preferred_enrolled: f?.women ?? false,
+    };
+  });
 }
 
 /**
@@ -125,12 +199,15 @@ export async function findCandidates(rideId: string): Promise<{
 export async function offerRideToDriver(
   rideId: string,
   driver: NearbyDriver,
-  ride: { pickup_address: string; dropoff_address: string; estimated_fare: number; distance_km: number },
+  ride: { pickup_address: string; dropoff_address: string; estimated_fare: number; distance_km: number; preferences?: StoredRidePreferences | null },
 ): Promise<boolean> {
   // Set offer in Redis (15s TTL — auto-expires if driver doesn't respond)
   await setDriverOffer(rideId, driver.driver_id, OFFER_TIMEOUT_SEC);
 
+  const petFriendly = ride.preferences?.pet_friendly === true;
+
   // Send push notification to driver (resolves drivers.id → auth user id).
+  // The pet_friendly flag rides along so the driver sees it BEFORE accepting.
   const supabase = createServiceClient();
   const offerToken = await pushTokenForDriverRow(driver.driver_id);
   if (offerToken) {
@@ -140,6 +217,7 @@ export async function offerRideToDriver(
       dropoffAddress: ride.dropoff_address,
       estimatedFare: Number(ride.estimated_fare),
       distanceKm: Number(ride.distance_km),
+      petFriendly,
     }));
   }
 
@@ -153,6 +231,7 @@ export async function offerRideToDriver(
       driver_name: driver.driver_name,
       distance_m: driver.distance_m,
       timeout_sec: OFFER_TIMEOUT_SEC,
+      ...(petFriendly ? { pet_friendly: true } : {}),
     },
   });
 
