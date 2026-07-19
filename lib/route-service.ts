@@ -20,6 +20,13 @@ export interface RouteInput {
   pickupLng: number;
   dropoffLat: number;
   dropoffLng: number;
+  /** Ordered intermediate stops between pickup and dropoff (max 3). */
+  waypoints?: { lat: number; lng: number }[];
+}
+
+export interface RouteLeg {
+  distanceKm: number;
+  durationMin: number;
 }
 
 export interface RouteResult {
@@ -28,6 +35,8 @@ export interface RouteResult {
   polyline: string;
   pickupAddress: string;
   dropoffAddress: string;
+  /** One leg per hop: pickup→stop1, …, lastStop→dropoff. Single leg when no waypoints. */
+  legs: RouteLeg[];
 }
 
 const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? '';
@@ -41,8 +50,14 @@ export async function calculateRoute(input: RouteInput): Promise<RouteResult> {
     throw new Error('GOOGLE_MAPS_API_KEY is not configured');
   }
 
-  // Check cache (rounded to ~100m grid)
-  const cacheKey = `${roundCoord(input.pickupLat)},${roundCoord(input.pickupLng)}-${roundCoord(input.dropoffLat)},${roundCoord(input.dropoffLng)}`;
+  const waypoints = input.waypoints ?? [];
+
+  // Check cache (rounded to ~100m grid, waypoints included in the key)
+  const cacheKey = [
+    `${roundCoord(input.pickupLat)},${roundCoord(input.pickupLng)}`,
+    ...waypoints.map((w) => `${roundCoord(w.lat)},${roundCoord(w.lng)}`),
+    `${roundCoord(input.dropoffLat)},${roundCoord(input.dropoffLng)}`,
+  ].join('-');
   const cached = routeCache.get(cacheKey);
   if (cached) return cached;
 
@@ -52,6 +67,10 @@ export async function calculateRoute(input: RouteInput): Promise<RouteResult> {
   const url = new URL('https://maps.googleapis.com/maps/api/directions/json');
   url.searchParams.set('origin', origin);
   url.searchParams.set('destination', destination);
+  if (waypoints.length > 0) {
+    // No "optimize:true" — the rider's chosen stop order is never reshuffled.
+    url.searchParams.set('waypoints', waypoints.map((w) => `${w.lat},${w.lng}`).join('|'));
+  }
   url.searchParams.set('mode', 'driving');
   url.searchParams.set('key', GOOGLE_MAPS_KEY);
 
@@ -67,18 +86,31 @@ export async function calculateRoute(input: RouteInput): Promise<RouteResult> {
   }
 
   const route = data.routes[0];
-  const leg = route.legs[0];
+  const rawLegs: { distance?: { value?: number }; duration?: { value?: number }; start_address?: string; end_address?: string }[] =
+    route.legs ?? [];
 
-  if (!leg?.distance?.value || !leg?.duration?.value) {
-    throw new Error('Route returned invalid distance/duration');
+  // With N waypoints Google returns N+1 legs, in submitted order.
+  if (rawLegs.length !== waypoints.length + 1) {
+    throw new Error(`Route returned ${rawLegs.length} legs for ${waypoints.length} waypoints`);
+  }
+  for (const leg of rawLegs) {
+    if (!leg?.distance?.value || !leg?.duration?.value) {
+      throw new Error('Route returned invalid distance/duration');
+    }
   }
 
+  const legs: RouteLeg[] = rawLegs.map((leg) => ({
+    distanceKm: Math.round(((leg.distance!.value as number) / 1000) * 100) / 100,
+    durationMin: Math.ceil((leg.duration!.value as number) / 60),
+  }));
+
   const result: RouteResult = {
-    distanceKm: Math.round((leg.distance.value / 1000) * 100) / 100,
-    durationMin: Math.ceil(leg.duration.value / 60),
+    distanceKm: Math.round(legs.reduce((s, l) => s + l.distanceKm, 0) * 100) / 100,
+    durationMin: legs.reduce((s, l) => s + l.durationMin, 0),
     polyline: route.overview_polyline?.points ?? '',
-    pickupAddress: leg.start_address ?? '',
-    dropoffAddress: leg.end_address ?? '',
+    pickupAddress: rawLegs[0]?.start_address ?? '',
+    dropoffAddress: rawLegs[rawLegs.length - 1]?.end_address ?? '',
+    legs,
   };
 
   routeCache.set(cacheKey, result);

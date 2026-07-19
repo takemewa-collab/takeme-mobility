@@ -16,7 +16,8 @@
     "driver": "npm run start --workspace=packages/driver",
     "rider:dev": "npm run dev --workspace=packages/rider",
     "driver:dev": "npm run dev --workspace=packages/driver",
-    "shared:build": "npm run build --workspace=packages/shared"
+    "shared:build": "npm run build --workspace=packages/shared",
+    "test": "vitest run"
   },
   "dependencies": {
     "@aws-sdk/client-iam": "^3.1023.0",
@@ -67,6 +68,7 @@
     "pg": "^8.20.0",
     "semver": "^7.8.5",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.7"
   }
 }

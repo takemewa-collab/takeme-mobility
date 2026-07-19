@@ -5,6 +5,13 @@ import { createServiceClient } from '@/lib/supabase/service';
 import { findOrCreateCustomer, createPaymentIntent, attachRideToPaymentIntent } from '@/lib/stripe';
 import { dispatchWithRetry } from '@/lib/dispatch-queue';
 import { TIERS, calculateFare, type VehicleClass } from '@/lib/pricing';
+import {
+  haversineKm,
+  routePointsArraySchema,
+  routeTotalsPlausible,
+  validateRoutePoints,
+} from '@/lib/route-points';
+import { calculateRoute } from '@/lib/route-service';
 import { rateLimit } from '@/lib/rate-limit';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -46,6 +53,10 @@ const requestSchema = z.object({
   // ride exists, then pass that intent here so we link it instead of creating a
   // second one. Absent → legacy path that creates its own intent.
   paymentIntentId: z.string().startsWith('pi_').optional(),
+
+  // Multi-stop itinerary: pickup → up to 3 stops → dropoff, ordered by seq.
+  // Absent → classic single-destination ride (fully backward compatible).
+  routePoints: routePointsArraySchema.optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -76,7 +87,66 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: message }, { status: 400 });
     }
 
-    // 3. Server-side fare verification — prevent client-side price manipulation
+    // 3. Multi-stop route validation (when an itinerary is submitted).
+    // Semantics first (one pickup, one dropoff, ≤3 stops, contiguous order),
+    // then endpoint agreement with the flat pickup/dropoff fields, then route
+    // totals — verified against Google when reachable, with a straight-line
+    // plausibility floor as the always-on guard.
+    let orderedPoints: ReturnType<typeof validateRoutePoints>['ordered'] = undefined;
+    let stopCount = 0;
+
+    if (body.routePoints) {
+      const route = validateRoutePoints(body.routePoints);
+      if (!route.ok || !route.ordered) {
+        return NextResponse.json({ error: route.error ?? 'Invalid route.' }, { status: 400 });
+      }
+      orderedPoints = route.ordered;
+      stopCount = orderedPoints.length - 2;
+
+      const first = orderedPoints[0];
+      const last = orderedPoints[orderedPoints.length - 1];
+      const ENDPOINT_TOLERANCE_KM = 0.05;
+      if (
+        haversineKm(first, { lat: body.pickupLat, lng: body.pickupLng }) > ENDPOINT_TOLERANCE_KM ||
+        haversineKm(last, { lat: body.dropoffLat, lng: body.dropoffLng }) > ENDPOINT_TOLERANCE_KM
+      ) {
+        return NextResponse.json(
+          { error: 'Route points do not match the pickup and destination.' },
+          { status: 400 },
+        );
+      }
+
+      if (!routeTotalsPlausible(orderedPoints, body.distanceKm)) {
+        return NextResponse.json(
+          { error: 'Route totals look wrong — please refresh your quote.' },
+          { status: 400 },
+        );
+      }
+
+      // Independent recalculation through every waypoint. Provider hiccups
+      // must not block booking (the plausibility guard above still holds),
+      // but when Google answers, a big disagreement is a stale/forged quote.
+      try {
+        const serverRoute = await calculateRoute({
+          pickupLat: body.pickupLat,
+          pickupLng: body.pickupLng,
+          dropoffLat: body.dropoffLat,
+          dropoffLng: body.dropoffLng,
+          waypoints: orderedPoints.slice(1, -1).map((p) => ({ lat: p.lat, lng: p.lng })),
+        });
+        const kmDrift = Math.abs(serverRoute.distanceKm - body.distanceKm);
+        if (kmDrift > Math.max(3, serverRoute.distanceKm * 0.25)) {
+          return NextResponse.json(
+            { error: 'Route changed since your quote — please refresh.' },
+            { status: 400 },
+          );
+        }
+      } catch (routeErr) {
+        console.warn('Server route verification unavailable (non-fatal):', routeErr);
+      }
+    }
+
+    // 4. Server-side fare verification — prevent client-side price manipulation
     const tier = TIERS[body.vehicleClass as VehicleClass];
     if (!tier) {
       return NextResponse.json({ error: 'Invalid vehicle class' }, { status: 400 });
@@ -85,6 +155,7 @@ export async function POST(request: NextRequest) {
     const serverFare = calculateFare(tier, body.distanceKm, body.durationMin, {
       surgeMultiplier: body.surgeMultiplier,
       currency: body.currency,
+      stopCount,
     });
 
     // Allow $1.00 tolerance for floating-point rounding differences
@@ -136,37 +207,92 @@ export async function POST(request: NextRequest) {
       console.warn('Quote snapshot failed (non-fatal):', quoteError.message);
     }
 
-    // 4. Create ride record
-    const { data: rideData, error: rideError } = await supabase
-      .from('rides')
-      .insert({
-        rider_id: user.id,
-        quote_id: quoteId,
-        status: 'searching_driver',
-        pickup_address: body.pickupAddress,
-        pickup_lat: body.pickupLat,
-        pickup_lng: body.pickupLng,
-        dropoff_address: body.dropoffAddress,
-        dropoff_lat: body.dropoffLat,
-        dropoff_lng: body.dropoffLng,
-        vehicle_class: body.vehicleClass,
-        distance_km: body.distanceKm,
-        duration_min: body.durationMin,
-        route_polyline: body.polyline ?? null,
-        estimated_fare: verifiedFare,
-        currency: body.currency,
-        surge_multiplier: body.surgeMultiplier,
-        requested_at: new Date().toISOString(),
-      })
-      .select('id, status, estimated_fare, currency, requested_at')
-      .single();
+    // 5. Create ride record
+    type CreatedRide = {
+      id: string;
+      status: string;
+      estimated_fare: number;
+      currency: string;
+      requested_at: string;
+    };
+    let rideData: CreatedRide | null = null;
 
-    if (rideError || !rideData) {
-      console.error('Ride creation failed:', rideError);
-      return NextResponse.json(
-        { error: 'Could not create ride. Please try again.' },
-        { status: 500 },
-      );
+    if (orderedPoints) {
+      // Multi-stop: the ride row and its ordered points must land atomically —
+      // a SECURITY DEFINER function (042) does both in one transaction. It is
+      // executable by the service role only; the rider was authenticated above.
+      const svc = createServiceClient();
+      const { data: created, error: rpcError } = await svc.rpc('create_ride_with_route_points', {
+        p_rider_id: user.id,
+        p_ride: {
+          quote_id: quoteId,
+          pickup_address: body.pickupAddress,
+          pickup_lat: body.pickupLat,
+          pickup_lng: body.pickupLng,
+          dropoff_address: body.dropoffAddress,
+          dropoff_lat: body.dropoffLat,
+          dropoff_lng: body.dropoffLng,
+          vehicle_class: body.vehicleClass,
+          distance_km: body.distanceKm,
+          duration_min: body.durationMin,
+          route_polyline: body.polyline ?? null,
+          estimated_fare: verifiedFare,
+          currency: body.currency,
+          surge_multiplier: body.surgeMultiplier,
+        },
+        p_points: orderedPoints.map((p) => ({
+          point_type: p.type,
+          seq: p.seq,
+          place_name: p.placeName ?? null,
+          formatted_address: p.formattedAddress,
+          lat: p.lat,
+          lng: p.lng,
+          provider_place_id: p.providerPlaceId ?? null,
+          leg_distance_km: p.legDistanceKm ?? null,
+          leg_duration_min: p.legDurationMin ?? null,
+        })),
+      });
+      if (rpcError || !created) {
+        console.error('Multi-stop ride creation failed:', rpcError);
+        return NextResponse.json(
+          { error: 'Could not create ride. Please try again.' },
+          { status: 500 },
+        );
+      }
+      rideData = created as CreatedRide;
+    } else {
+      const { data: inserted, error: rideError } = await supabase
+        .from('rides')
+        .insert({
+          rider_id: user.id,
+          quote_id: quoteId,
+          status: 'searching_driver',
+          pickup_address: body.pickupAddress,
+          pickup_lat: body.pickupLat,
+          pickup_lng: body.pickupLng,
+          dropoff_address: body.dropoffAddress,
+          dropoff_lat: body.dropoffLat,
+          dropoff_lng: body.dropoffLng,
+          vehicle_class: body.vehicleClass,
+          distance_km: body.distanceKm,
+          duration_min: body.durationMin,
+          route_polyline: body.polyline ?? null,
+          estimated_fare: verifiedFare,
+          currency: body.currency,
+          surge_multiplier: body.surgeMultiplier,
+          requested_at: new Date().toISOString(),
+        })
+        .select('id, status, estimated_fare, currency, requested_at')
+        .single();
+
+      if (rideError || !inserted) {
+        console.error('Ride creation failed:', rideError);
+        return NextResponse.json(
+          { error: 'Could not create ride. Please try again.' },
+          { status: 500 },
+        );
+      }
+      rideData = inserted;
     }
 
     // 5. Set up payment — authorize (hold funds) immediately

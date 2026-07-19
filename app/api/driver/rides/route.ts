@@ -56,11 +56,22 @@ export async function GET(request: NextRequest) {
       .eq('id', ride.rider_id)
       .single();
 
+    // Ordered itinerary. Empty for classic single-destination rides — the
+    // driver app then falls back to the flat pickup/dropoff columns.
+    const { data: routePoints } = await svc
+      .from('ride_route_points')
+      .select(
+        'id, point_type, seq, place_name, formatted_address, lat, lng, leg_distance_km, leg_duration_min, status, arrived_at, completed_at',
+      )
+      .eq('ride_id', ride.id)
+      .order('seq', { ascending: true });
+
     return NextResponse.json({
       ride: {
         ...ride,
         rider_name: rider?.full_name ?? 'Rider',
         rider_rating: rider?.rating ?? 5.0,
+        route_points: routePoints ?? [],
       },
     });
   } catch (err) {
@@ -80,9 +91,37 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
 
 const updateSchema = z.object({
   rideId: z.string().uuid(),
-  action: z.enum(['accept', 'arriving', 'arrived', 'start_trip', 'complete', 'cancel']),
+  action: z.enum([
+    'accept',
+    'arriving',
+    'arrived',
+    'start_trip',
+    'complete',
+    'cancel',
+    // Multi-stop itinerary progression — operate on one intermediate stop
+    // while the ride itself stays `in_progress`.
+    'arrive_stop',
+    'depart_stop',
+    'skip_stop',
+  ]),
   cancelReason: z.string().optional(),
+  /** Required for the *_stop actions: the ride_route_points row to advance. */
+  pointId: z.string().uuid().optional(),
 });
+
+const STOP_ACTIONS = new Set(['arrive_stop', 'depart_stop', 'skip_stop']);
+
+const STOP_TARGET: Record<string, 'arrived' | 'completed' | 'skipped'> = {
+  arrive_stop: 'arrived',
+  depart_stop: 'completed',
+  skip_stop: 'skipped',
+};
+
+const STOP_FROM: Record<string, string[]> = {
+  arrive_stop: ['pending'],
+  depart_stop: ['arrived'],
+  skip_stop: ['pending', 'arrived'],
+};
 
 const ACTION_TO_STATUS: Record<string, string> = {
   accept: 'driver_arriving',
@@ -140,6 +179,123 @@ export async function PUT(request: NextRequest) {
     // For non-accept actions, verify the driver owns the ride
     if (ride.assigned_driver_id !== driver.id) {
       return NextResponse.json({ error: 'Not your ride' }, { status: 403 });
+    }
+
+    // ── Multi-stop itinerary progression ─────────────────────────────
+    // These advance ONE intermediate stop; the ride status stays
+    // `in_progress`. Idempotent: replaying an action whose target state is
+    // already reached returns 200 with the current state instead of erroring,
+    // so double-taps and retried requests cannot corrupt the trip.
+    if (STOP_ACTIONS.has(body.action)) {
+      if (ride.status !== 'in_progress') {
+        return NextResponse.json(
+          { error: 'Stops can only be updated during the trip.' },
+          { status: 409 },
+        );
+      }
+      if (!body.pointId) {
+        return NextResponse.json({ error: 'pointId is required.' }, { status: 400 });
+      }
+
+      const { data: point } = await svc
+        .from('ride_route_points')
+        .select('id, point_type, seq, status')
+        .eq('id', body.pointId)
+        .eq('ride_id', body.rideId)
+        .single();
+
+      if (!point) {
+        return NextResponse.json({ error: 'Route point not found.' }, { status: 404 });
+      }
+      if (point.point_type !== 'stop') {
+        return NextResponse.json(
+          { error: 'Only intermediate stops can be updated with this action.' },
+          { status: 400 },
+        );
+      }
+
+      const target = STOP_TARGET[body.action];
+
+      // Replay of an already-applied (or terminally settled) action → success.
+      if (point.status === target || point.status === 'completed' || point.status === 'skipped') {
+        return NextResponse.json({ pointId: point.id, pointStatus: point.status, replay: true });
+      }
+
+      if (!STOP_FROM[body.action].includes(point.status)) {
+        return NextResponse.json(
+          { error: `Stop is ${point.status} — cannot ${body.action.replace('_', ' ')}.` },
+          { status: 409 },
+        );
+      }
+
+      // Order guard: arriving at a later stop while an earlier one is still
+      // pending would silently skip it. Skipping is its own explicit action.
+      if (body.action !== 'skip_stop') {
+        const { data: earlierOpen } = await svc
+          .from('ride_route_points')
+          .select('id')
+          .eq('ride_id', body.rideId)
+          .eq('point_type', 'stop')
+          .lt('seq', point.seq)
+          .in('status', ['pending', 'arrived'])
+          .limit(1);
+        if (earlierOpen && earlierOpen.length > 0) {
+          return NextResponse.json(
+            { error: 'An earlier stop is still open — complete or skip it first.' },
+            { status: 409 },
+          );
+        }
+      }
+
+      const nowIso = new Date().toISOString();
+      const pointUpdate: Record<string, unknown> = { status: target };
+      if (target === 'arrived') pointUpdate.arrived_at = nowIso;
+      else pointUpdate.completed_at = nowIso;
+
+      const { data: updatedPoint, error: pointError } = await svc
+        .from('ride_route_points')
+        .update(pointUpdate)
+        .eq('id', point.id)
+        .eq('status', point.status) // optimistic lock — concurrent taps race safely
+        .select('id, status')
+        .maybeSingle();
+
+      if (pointError) {
+        return NextResponse.json({ error: 'Update failed' }, { status: 500 });
+      }
+      if (!updatedPoint) {
+        return NextResponse.json(
+          { error: 'Stop state changed — please refresh.' },
+          { status: 409 },
+        );
+      }
+
+      await svc.from('ride_events').insert({
+        ride_id: body.rideId,
+        event_type: `route_point_${target}`,
+        actor: 'driver',
+        metadata: { driver_id: driver.id, point_id: point.id, seq: point.seq, action: body.action },
+      });
+
+      return NextResponse.json({ pointId: updatedPoint.id, pointStatus: updatedPoint.status });
+    }
+
+    // Completing the ride requires the whole itinerary to be settled — the
+    // final destination is the only place a trip can end.
+    if (body.action === 'complete') {
+      const { data: openStops } = await svc
+        .from('ride_route_points')
+        .select('id')
+        .eq('ride_id', body.rideId)
+        .eq('point_type', 'stop')
+        .in('status', ['pending', 'arrived'])
+        .limit(1);
+      if (openStops && openStops.length > 0) {
+        return NextResponse.json(
+          { error: 'Stops remain on the itinerary — continue the trip first.' },
+          { status: 409 },
+        );
+      }
     }
 
     // Validate transition
@@ -232,6 +388,37 @@ export async function PUT(request: NextRequest) {
       await svc.from('drivers').update({ status: 'on_trip' }).eq('id', driver.id);
     } else if (finalStatus === 'completed' || finalStatus === 'cancelled') {
       await svc.from('drivers').update({ status: 'available' }).eq('id', driver.id);
+    }
+
+    // Mirror ride-level milestones onto the route points so multi-stop
+    // itineraries stay consistent (single-destination rides have no rows here
+    // and each update simply matches nothing). Best-effort — a miss never
+    // strands the ride, and restore paths re-derive from ride.status.
+    try {
+      if (finalStatus === 'arrived') {
+        await svc
+          .from('ride_route_points')
+          .update({ status: 'arrived', arrived_at: now })
+          .eq('ride_id', body.rideId)
+          .eq('point_type', 'pickup')
+          .eq('status', 'pending');
+      } else if (finalStatus === 'in_progress') {
+        await svc
+          .from('ride_route_points')
+          .update({ status: 'completed', completed_at: now })
+          .eq('ride_id', body.rideId)
+          .eq('point_type', 'pickup')
+          .neq('status', 'completed');
+      } else if (finalStatus === 'completed') {
+        await svc
+          .from('ride_route_points')
+          .update({ status: 'completed', arrived_at: now, completed_at: now })
+          .eq('ride_id', body.rideId)
+          .eq('point_type', 'dropoff')
+          .neq('status', 'completed');
+      }
+    } catch (pointErr) {
+      console.warn('[driver/rides] route-point mirror failed (non-blocking):', pointErr);
     }
 
     // Settle the authorized card hold. Non-blocking: a Stripe hiccup must not

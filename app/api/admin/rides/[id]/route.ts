@@ -13,7 +13,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
   const svc = createServiceClient();
 
   try {
-    const [rideResult, eventsResult, fraudResult] = await Promise.all([
+    const [rideResult, eventsResult, fraudResult, routePointsResult] = await Promise.all([
       svc
         .from('rides')
         .select(`
@@ -36,6 +36,11 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
         .eq('ride_id', id)
         .order('created_at', { ascending: false })
         .limit(1),
+      svc
+        .from('ride_route_points')
+        .select('id, point_type, seq, place_name, formatted_address, lat, lng, leg_distance_km, leg_duration_min, status, arrived_at, completed_at')
+        .eq('ride_id', id)
+        .order('seq', { ascending: true }),
     ]);
 
     if (rideResult.error || !rideResult.data) {
@@ -79,6 +84,8 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
       payment: ride.payments ?? null,
       events: eventsResult.data ?? [],
       fraud_score: fraudResult.data?.[0] ?? null,
+      // Ordered multi-stop itinerary; empty for single-destination rides.
+      route_points: routePointsResult.data ?? [],
     });
   } catch (err) {
     console.error('[admin/rides/id]', err);

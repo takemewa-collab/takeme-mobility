@@ -69,6 +69,19 @@ export const SURCHARGES: Surcharge[] = [
   // { id: 'zurich_night', label: 'Night surcharge', amount: 3.00, appliesTo: ['economy', 'comfort'] },
 ];
 
+// ── Multi-stop fee ───────────────────────────────────────────────────────
+// Flat fee per intermediate stop, configurable via env so ops can tune it
+// without a deploy of client apps. Like the booking fee it is NOT surged.
+// NOTE: the rider app quotes with the same default client-side; if you
+// override the env, redeploy pricing to the apps or fares will mismatch.
+
+const DEFAULT_STOP_FEE = 1.5;
+
+export function stopFeePerStop(): number {
+  const raw = Number(process.env.MULTI_STOP_FEE_USD);
+  return Number.isFinite(raw) && raw >= 0 && raw <= 20 ? raw : DEFAULT_STOP_FEE;
+}
+
 // ── Fare calculation ─────────────────────────────────────────────────────
 
 export interface FareBreakdown {
@@ -76,6 +89,8 @@ export interface FareBreakdown {
   distanceFare: number;
   timeFare: number;
   bookingFee: number;
+  /** Flat multi-stop fee: stopCount × stopFeePerStop(). 0 for direct trips. */
+  stopFee: number;
   surcharges: { id: string; label: string; amount: number }[];
   surchargeTotal: number;
   subtotal: number;
@@ -102,6 +117,8 @@ export function calculateFare(
     surgeMultiplier?: number;
     surchargeIds?: string[];
     currency?: string;
+    /** Number of intermediate stops on the route (0 for a direct trip). */
+    stopCount?: number;
   } = {},
 ): FareBreakdown {
   const surge = opts.surgeMultiplier ?? 1.0;
@@ -111,6 +128,7 @@ export function calculateFare(
   const distanceFare = round2(distanceKm * tier.perKmRate);
   const timeFare = round2(durationMin * tier.perMinRate);
   const bookingFee = tier.bookingFee;
+  const stopFee = round2(Math.max(0, opts.stopCount ?? 0) * stopFeePerStop());
 
   // Apply surcharges
   const activeSurcharges = SURCHARGES.filter(s => {
@@ -120,12 +138,9 @@ export function calculateFare(
   });
   const surchargeTotal = round2(activeSurcharges.reduce((sum, s) => sum + s.amount, 0));
 
-  // Subtotal before surge
-  const rawSubtotal = baseFare + distanceFare + timeFare + bookingFee + surchargeTotal;
-
-  // Apply surge to ride cost (not booking fee or surcharges)
+  // Apply surge to ride cost (not booking fee, stop fee, or surcharges)
   const rideCost = (baseFare + distanceFare + timeFare) * surge;
-  const subtotal = round2(rideCost + bookingFee + surchargeTotal);
+  const subtotal = round2(rideCost + bookingFee + stopFee + surchargeTotal);
 
   // Enforce minimum fare
   const minFareApplied = subtotal < tier.minFare;
@@ -136,6 +151,7 @@ export function calculateFare(
     distanceFare,
     timeFare,
     bookingFee,
+    stopFee,
     surcharges: activeSurcharges.map(s => ({ id: s.id, label: s.label, amount: s.amount })),
     surchargeTotal,
     subtotal,
@@ -156,6 +172,7 @@ export function generateQuotes(
     surgeMultiplier?: number;
     surchargeIds?: string[];
     currency?: string;
+    stopCount?: number;
   } = {},
 ): QuoteResult[] {
   return ALL_TIERS.map(cls => {
