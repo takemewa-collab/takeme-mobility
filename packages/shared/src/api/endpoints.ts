@@ -34,6 +34,7 @@ export const API = {
   DRIVER_LOCATION: '/api/driver/location',
   PUSH_TOKEN: '/api/push-token',
   DRIVER_RIDES: '/api/driver/rides',
+  DRIVER_PREFERENCES: '/api/driver/preferences',
   DRIVER_DASHBOARD: '/api/driver/dashboard',
   DRIVER_DOCUMENTS: '/api/driver/documents',
   DRIVER_EARNINGS_ADD: '/api/driver/earnings/add',

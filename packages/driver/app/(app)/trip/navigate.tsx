@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { formatRating, API } from '@takeme/shared';
 import { AirportContextCard } from '@/components/airport-context-card';
 import { Button } from '@/components/ui';
+import { PetFriendlyCard } from '@/components/pet-friendly-card';
 import { TripMap } from '@/components/trip-map';
 import { TripMessagesSheet } from '@/components/trip-messages';
 import { useDriverStatus } from '@/providers/driver-status';
@@ -35,7 +36,7 @@ export default function NavigateScreen() {
         action: 'arrived',
       });
       router.replace('/(app)/trip/arrived');
-    } catch (err) {
+    } catch {
       Alert.alert('Error', 'Could not update status.');
       setLoading(false);
     }
@@ -63,6 +64,8 @@ export default function NavigateScreen() {
         </Text>
 
         {airportPickup ? <AirportContextCard context={airportPickup} /> : null}
+
+        {activeTrip?.preferences.pet_friendly ? <PetFriendlyCard /> : null}
 
         <View style={styles.riderInfo}>
           <View style={styles.riderAvatar}>

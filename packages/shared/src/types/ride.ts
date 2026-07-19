@@ -107,6 +107,25 @@ export interface AirportContext {
   snapshot: AirportContextSnapshot;
 }
 
+/**
+ * Rider-selected preference flags attached to a ride. `pet_friendly` is shown
+ * to the driver; `women_preferred` is rider-facing only and must never be
+ * surfaced in driver UI.
+ */
+export interface RidePreferences {
+  pet_friendly?: boolean;
+  women_preferred?: boolean;
+}
+
+/** GET/PUT /api/driver/preferences — a driver's ride-preference settings. */
+export interface DriverRidePreferences {
+  petFriendlyOptIn: boolean;
+  womenPreferred: {
+    invited: boolean;
+    enrolled: boolean;
+  };
+}
+
 export type RideEventType =
   | 'status_change'
   | 'location_update'
@@ -162,6 +181,12 @@ export interface Ride {
    * attaches them. Empty/absent for rides that never touch an airport.
    */
   airport_contexts?: AirportContext[];
+
+  /**
+   * Rider preference flags, present when the server attaches them.
+   * Absent for rides with no preferences (and from older servers).
+   */
+  preferences?: RidePreferences;
 }
 
 export interface RideEvent {

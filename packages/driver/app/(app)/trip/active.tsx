@@ -6,6 +6,7 @@ import type { RoutePoint, RoutePointStatus } from '@takeme/shared';
 import { formatCurrency, formatDistanceMi, API, ApiError } from '@takeme/shared';
 import { AirportContextCard } from '@/components/airport-context-card';
 import { Button } from '@/components/ui';
+import { PetFriendlyCard } from '@/components/pet-friendly-card';
 import { TripMap } from '@/components/trip-map';
 import { useDriverStatus } from '@/providers/driver-status';
 import { useTrip } from '@/providers/trip';
@@ -182,6 +183,9 @@ export default function ActiveTripScreen() {
         </View>
 
         {airportContext ? <AirportContextCard context={airportContext} /> : null}
+
+        {/* women_preferred intentionally has no driver-facing indicator. */}
+        {activeTrip?.preferences.pet_friendly ? <PetFriendlyCard /> : null}
 
         {hasItinerary && otherPoints.length > 0 ? (
           <View style={styles.itinerary}>

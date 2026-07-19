@@ -9,7 +9,14 @@ import React, {
   useState,
 } from 'react';
 import { AppState } from 'react-native';
-import type { AirportContext, Ride, RideStatus, RoutePoint, RoutePointStatus } from '@takeme/shared';
+import type {
+  AirportContext,
+  Ride,
+  RidePreferences,
+  RideStatus,
+  RoutePoint,
+  RoutePointStatus,
+} from '@takeme/shared';
 import { ApiClient, API } from '@takeme/shared';
 import { getClerkToken } from '@/lib/clerk';
 import { useSupabase } from './supabase';
@@ -28,12 +35,13 @@ interface RiderInfo {
 }
 
 /**
- * The active trip always carries its (possibly empty) multi-stop itinerary and
- * airport contexts.
+ * The active trip always carries its (possibly empty) multi-stop itinerary,
+ * airport contexts, and rider preference flags.
  */
 export type ActiveTrip = Ride & {
   route_points: RoutePoint[];
   airport_contexts: AirportContext[];
+  preferences: RidePreferences;
 };
 
 interface TripState {
@@ -76,6 +84,31 @@ function normalizeRoutePoint(raw: Record<string, unknown> | null | undefined): R
   };
 }
 
+/**
+ * Preference flags arrive either as `ride.preferences` (GET /api/driver/rides,
+ * rides row) or as a flat `pet_friendly` boolean on the incoming-offer payload.
+ * Returns null when the source carried no preference data at all, so the
+ * reducer can keep already-known flags instead of wiping them.
+ */
+function normalizeRidePreferences(
+  raw: Ride & { pet_friendly?: unknown },
+): RidePreferences | null {
+  if (raw.preferences && typeof raw.preferences === 'object') {
+    return {
+      ...(typeof raw.preferences.pet_friendly === 'boolean'
+        ? { pet_friendly: raw.preferences.pet_friendly }
+        : {}),
+      ...(typeof raw.preferences.women_preferred === 'boolean'
+        ? { women_preferred: raw.preferences.women_preferred }
+        : {}),
+    };
+  }
+  if (typeof raw.pet_friendly === 'boolean') {
+    return { pet_friendly: raw.pet_friendly };
+  }
+  return null;
+}
+
 const bySeq = (a: RoutePoint, b: RoutePoint) => a.seq - b.seq;
 
 function tripReducer(state: TripState, action: TripAction): TripState {
@@ -90,9 +123,11 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       const route_points = action.trip.route_points ?? (sameRide ? prev.route_points : []);
       const airport_contexts =
         action.trip.airport_contexts ?? (sameRide ? prev.airport_contexts : []);
+      const preferences =
+        normalizeRidePreferences(action.trip) ?? (sameRide ? prev.preferences : {});
       return {
         ...state,
-        activeTrip: { ...action.trip, route_points, airport_contexts },
+        activeTrip: { ...action.trip, route_points, airport_contexts, preferences },
         error: null,
       };
     }

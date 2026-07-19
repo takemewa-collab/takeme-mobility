@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,30 +16,6 @@ export default function IncomingRideScreen() {
   const [accepting, setAccepting] = useState(false);
   const [rejecting, setRejecting] = useState(false);
 
-  useEffect(() => {
-    if (timeLeft <= 0) {
-      handleReject();
-      return;
-    }
-    const timer = setTimeout(() => setTimeLeft((t) => t - 1), 1000);
-    return () => clearTimeout(timer);
-  }, [timeLeft]);
-
-  const handleAccept = async () => {
-    if (!activeTrip || !apiClient || accepting) return;
-    setAccepting(true);
-    try {
-      await apiClient.put(API.DRIVER_RIDES, {
-        rideId: activeTrip.id,
-        action: 'accept',
-      });
-      router.replace('/(app)/trip/navigate');
-    } catch (err) {
-      Alert.alert('Error', 'Could not accept ride. Please try again.');
-      setAccepting(false);
-    }
-  };
-
   const handleReject = async () => {
     if (rejecting) return;
     setRejecting(true);
@@ -56,6 +32,36 @@ export default function IncomingRideScreen() {
     } catch {
       clearTrip();
       router.back();
+    }
+  };
+
+  // The countdown re-arms every second; the latest handleReject is kept in a
+  // ref so the expiry path never fires a stale closure.
+  const rejectRef = useRef(handleReject);
+  useEffect(() => {
+    rejectRef.current = handleReject;
+  });
+  useEffect(() => {
+    if (timeLeft <= 0) {
+      rejectRef.current();
+      return;
+    }
+    const timer = setTimeout(() => setTimeLeft((t) => t - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [timeLeft]);
+
+  const handleAccept = async () => {
+    if (!activeTrip || !apiClient || accepting) return;
+    setAccepting(true);
+    try {
+      await apiClient.put(API.DRIVER_RIDES, {
+        rideId: activeTrip.id,
+        action: 'accept',
+      });
+      router.replace('/(app)/trip/navigate');
+    } catch {
+      Alert.alert('Error', 'Could not accept ride. Please try again.');
+      setAccepting(false);
     }
   };
 
@@ -83,6 +89,16 @@ export default function IncomingRideScreen() {
       <View style={styles.content}>
         <Text style={styles.title}>New Ride Request</Text>
         <Text style={styles.timer}>{timeLeft}s</Text>
+
+        {/* Preference badge sits above the ride card so the driver sees it
+            before deciding to accept. expo-symbols isn't a dependency, so the
+            paw is the text glyph rather than SF Symbol 'pawprint.fill'. */}
+        {activeTrip.preferences.pet_friendly ? (
+          <View style={styles.petBadge}>
+            <Text style={styles.petBadgeTitle}>{'\u{1F43E}'} Pet Friendly trip</Text>
+            <Text style={styles.petBadgeSubtitle}>Rider is bringing a household pet.</Text>
+          </View>
+        ) : null}
 
         <View style={styles.rideCard}>
           <View style={styles.locationRow}>
@@ -153,6 +169,16 @@ const styles = StyleSheet.create({
   content: { flex: 1, padding: spacing['2xl'], alignItems: 'center' },
   title: { ...typography.h2, color: colors.text, marginBottom: spacing.sm },
   timer: { ...typography.h1, color: colors.accent, marginBottom: spacing['2xl'], fontVariant: ['tabular-nums'] },
+  petBadge: {
+    width: '100%',
+    backgroundColor: colors.gray900,
+    borderRadius: borderRadius.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing.md,
+  },
+  petBadgeTitle: { ...typography.bodyBold, color: colors.white },
+  petBadgeSubtitle: { ...typography.caption, color: colors.gray300, marginTop: 2 },
   rideCard: { width: '100%', backgroundColor: colors.gray50, borderRadius: borderRadius.lg, padding: spacing.xl },
   locationRow: { flexDirection: 'row', alignItems: 'center' },
   dot: { width: 12, height: 12, borderRadius: 6, marginRight: spacing.md },
