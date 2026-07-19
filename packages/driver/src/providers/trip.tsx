@@ -9,7 +9,7 @@ import React, {
   useState,
 } from 'react';
 import { AppState } from 'react-native';
-import type { Ride, RideStatus } from '@takeme/shared';
+import type { Ride, RideStatus, RoutePoint, RoutePointStatus } from '@takeme/shared';
 import { ApiClient, API } from '@takeme/shared';
 import { getClerkToken } from '@/lib/clerk';
 import { useSupabase } from './supabase';
@@ -27,8 +27,11 @@ interface RiderInfo {
   rating: number;
 }
 
+/** The active trip always carries its (possibly empty) multi-stop itinerary. */
+export type ActiveTrip = Ride & { route_points: RoutePoint[] };
+
 interface TripState {
-  activeTrip: Ride | null;
+  activeTrip: ActiveTrip | null;
   riderInfo: RiderInfo | null;
   loading: boolean;
   error: string | null;
@@ -36,15 +39,80 @@ interface TripState {
 
 type TripAction =
   | { type: 'SET_TRIP'; trip: Ride | null }
+  | { type: 'SET_POINTS'; rideId: string; points: RoutePoint[] }
+  | { type: 'UPSERT_POINT'; rideId: string; point: RoutePoint }
+  | { type: 'SET_POINT_STATUS'; pointId: string; status: RoutePointStatus }
   | { type: 'SET_RIDER_INFO'; info: RiderInfo | null }
   | { type: 'SET_LOADING'; loading: boolean }
   | { type: 'SET_ERROR'; error: string | null }
   | { type: 'CLEAR' };
 
+/**
+ * Realtime payloads and direct PostgREST reads can deliver numeric columns as
+ * strings; coerce so the rest of the app can trust RoutePoint's number fields.
+ */
+function normalizeRoutePoint(raw: Record<string, unknown> | null | undefined): RoutePoint | null {
+  if (!raw || typeof raw.id !== 'string') return null;
+  return {
+    id: raw.id,
+    point_type: raw.point_type as RoutePoint['point_type'],
+    seq: Number(raw.seq),
+    place_name: (raw.place_name as string | null) ?? null,
+    formatted_address: String(raw.formatted_address ?? ''),
+    lat: Number(raw.lat),
+    lng: Number(raw.lng),
+    leg_distance_km: raw.leg_distance_km == null ? null : Number(raw.leg_distance_km),
+    leg_duration_min: raw.leg_duration_min == null ? null : Number(raw.leg_duration_min),
+    status: raw.status as RoutePoint['status'],
+    arrived_at: (raw.arrived_at as string | null) ?? null,
+    completed_at: (raw.completed_at as string | null) ?? null,
+  };
+}
+
+const bySeq = (a: RoutePoint, b: RoutePoint) => a.seq - b.seq;
+
 function tripReducer(state: TripState, action: TripAction): TripState {
   switch (action.type) {
-    case 'SET_TRIP':
-      return { ...state, activeTrip: action.trip, error: null };
+    case 'SET_TRIP': {
+      if (!action.trip) return { ...state, activeTrip: null, error: null };
+      // Ride-row realtime updates arrive without route_points — keep the ones
+      // we already have for the same ride instead of wiping the itinerary.
+      const prev = state.activeTrip;
+      const route_points =
+        action.trip.route_points ?? (prev && prev.id === action.trip.id ? prev.route_points : []);
+      return { ...state, activeTrip: { ...action.trip, route_points }, error: null };
+    }
+    case 'SET_POINTS': {
+      if (!state.activeTrip || state.activeTrip.id !== action.rideId) return state;
+      return {
+        ...state,
+        activeTrip: { ...state.activeTrip, route_points: [...action.points].sort(bySeq) },
+      };
+    }
+    case 'UPSERT_POINT': {
+      const trip = state.activeTrip;
+      if (!trip || trip.id !== action.rideId) return state;
+      const exists = trip.route_points.some((p) => p.id === action.point.id);
+      const route_points = (
+        exists
+          ? trip.route_points.map((p) => (p.id === action.point.id ? action.point : p))
+          : [...trip.route_points, action.point]
+      ).sort(bySeq);
+      return { ...state, activeTrip: { ...trip, route_points } };
+    }
+    case 'SET_POINT_STATUS': {
+      const trip = state.activeTrip;
+      if (!trip) return state;
+      return {
+        ...state,
+        activeTrip: {
+          ...trip,
+          route_points: trip.route_points.map((p) =>
+            p.id === action.pointId ? { ...p, status: action.status } : p,
+          ),
+        },
+      };
+    }
     case 'SET_RIDER_INFO':
       return { ...state, riderInfo: action.info };
     case 'SET_LOADING':
@@ -60,6 +128,10 @@ function tripReducer(state: TripState, action: TripAction): TripState {
 
 interface TripContextValue extends TripState {
   restoreActiveTrip: () => Promise<void>;
+  /** Full re-sync from the server — use after a 409 (state moved under us). */
+  refreshTrip: () => Promise<void>;
+  /** Apply a server-confirmed stop status locally without waiting for realtime. */
+  markRoutePoint: (pointId: string, status: RoutePointStatus) => void;
   clearTrip: () => void;
   apiClient: ApiClient | null;
 }
@@ -108,6 +180,24 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     }
   }, [supabase]);
 
+  // Direct read of the itinerary — used by the Supabase fallback path and when
+  // a ride lands on us via the assignment channel (payload has no points).
+  const fetchRoutePoints = useCallback(
+    async (rideId: string): Promise<RoutePoint[]> => {
+      const { data } = await supabase
+        .from('ride_route_points')
+        .select(
+          'id, point_type, seq, place_name, formatted_address, lat, lng, leg_distance_km, leg_duration_min, status, arrived_at, completed_at',
+        )
+        .eq('ride_id', rideId)
+        .order('seq', { ascending: true });
+      return (data ?? [])
+        .map((row) => normalizeRoutePoint(row as Record<string, unknown>))
+        .filter((p): p is RoutePoint => p != null);
+    },
+    [supabase],
+  );
+
   const restoreActiveTrip = useCallback(async () => {
     if (!user) return;
 
@@ -118,7 +208,10 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
         try {
           const data = await apiClient.get<{ ride: Ride; rider_name?: string; rider_rating?: number }>(API.DRIVER_RIDES);
           if (data?.ride) {
-            dispatch({ type: 'SET_TRIP', trip: data.ride });
+            const route_points = (data.ride.route_points ?? [])
+              .map((p) => normalizeRoutePoint(p as unknown as Record<string, unknown>))
+              .filter((p): p is RoutePoint => p != null);
+            dispatch({ type: 'SET_TRIP', trip: { ...data.ride, route_points } });
             if (data.ride.rider_id) {
               await fetchRiderInfo(data.ride.rider_id);
             }
@@ -152,7 +245,12 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
         .maybeSingle();
 
       if (error) throw error;
-      dispatch({ type: 'SET_TRIP', trip: ride });
+      if (ride) {
+        const route_points = await fetchRoutePoints(ride.id);
+        dispatch({ type: 'SET_TRIP', trip: { ...ride, route_points } });
+      } else {
+        dispatch({ type: 'SET_TRIP', trip: null });
+      }
 
       if (ride?.rider_id) {
         await fetchRiderInfo(ride.rider_id);
@@ -163,10 +261,14 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     } finally {
       dispatch({ type: 'SET_LOADING', loading: false });
     }
-  }, [user, supabase, apiClient, fetchRiderInfo]);
+  }, [user, supabase, apiClient, fetchRiderInfo, fetchRoutePoints]);
 
   const clearTrip = useCallback(() => {
     dispatch({ type: 'CLEAR' });
+  }, []);
+
+  const markRoutePoint = useCallback((pointId: string, status: RoutePointStatus) => {
+    dispatch({ type: 'SET_POINT_STATUS', pointId, status });
   }, []);
 
   // Resolve this driver's row id once per session — assignment events are keyed
@@ -216,6 +318,12 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
           if (ride.id === activeTripId) return; // already tracked by the other channel
           dispatch({ type: 'SET_TRIP', trip: ride });
           if (ride.rider_id) fetchRiderInfo(ride.rider_id);
+          // The row payload carries no itinerary — load it separately.
+          fetchRoutePoints(ride.id).then((points) => {
+            if (points.length > 0) {
+              dispatch({ type: 'SET_POINTS', rideId: ride.id, points });
+            }
+          });
         },
       )
       .subscribe();
@@ -223,7 +331,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [driverId, activeTripId, supabase, fetchRiderInfo]);
+  }, [driverId, activeTripId, supabase, fetchRiderInfo, fetchRoutePoints]);
 
   // On return to the foreground, re-sync in case realtime dropped events while
   // backgrounded (also the polling-style safety net if the socket was down).
@@ -238,21 +346,36 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
 
   // Subscribe to realtime trip updates
   useEffect(() => {
-    if (!state.activeTrip) return;
+    const tripId = activeTripId;
+    if (!tripId) return;
 
     const channel = supabase
-      .channel(`driver_trip:${state.activeTrip.id}`)
+      .channel(`driver_trip:${tripId}`)
       .on(
         'postgres_changes',
         {
           event: 'UPDATE',
           schema: 'public',
           table: 'rides',
-          filter: `id=eq.${state.activeTrip.id}`,
+          filter: `id=eq.${tripId}`,
         },
         (payload) => {
           const updated = payload.new as Ride;
           dispatch({ type: 'SET_TRIP', trip: updated });
+        },
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'ride_route_points',
+          filter: `ride_id=eq.${tripId}`,
+        },
+        (payload) => {
+          const point = normalizeRoutePoint(payload.new as Record<string, unknown>);
+          if (!point) return; // DELETE payloads carry no row — ignore
+          dispatch({ type: 'UPSERT_POINT', rideId: tripId, point });
         },
       )
       .subscribe();
@@ -260,7 +383,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [state.activeTrip?.id, supabase]);
+  }, [activeTripId, supabase]);
 
   // Restore on login
   useEffect(() => {
@@ -272,8 +395,15 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
   }, [user, restoreActiveTrip]);
 
   const value = useMemo(
-    () => ({ ...state, restoreActiveTrip, clearTrip, apiClient }),
-    [state, restoreActiveTrip, clearTrip, apiClient],
+    () => ({
+      ...state,
+      restoreActiveTrip,
+      refreshTrip: restoreActiveTrip,
+      markRoutePoint,
+      clearTrip,
+      apiClient,
+    }),
+    [state, restoreActiveTrip, markRoutePoint, clearTrip, apiClient],
   );
 
   return (

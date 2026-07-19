@@ -8,6 +8,8 @@ interface TripMapProps {
   driver?: LatLng | null;
   pickup?: LatLng | null;
   dropoff?: LatLng | null;
+  /** Remaining itinerary stops, drawn as small numbered markers in order. */
+  stops?: LatLng[];
   /** Keep the camera glued to the driver (dashboard idle state). */
   followDriver?: boolean;
 }
@@ -20,12 +22,12 @@ const EDGE_PADDING = { top: 80, right: 60, bottom: 80, left: 60 };
  * `followDriver` it tracks the driver instead. Uses the platform's native map
  * (Apple Maps on iOS, Google on Android via the key in app.config.js).
  */
-export function TripMap({ driver, pickup, dropoff, followDriver = false }: TripMapProps) {
+export function TripMap({ driver, pickup, dropoff, stops, followDriver = false }: TripMapProps) {
   const mapRef = useRef<MapView>(null);
 
   const points = useMemo(
-    () => [driver, pickup, dropoff].filter((p): p is LatLng => p != null),
-    [driver, pickup, dropoff]
+    () => [driver, pickup, dropoff, ...(stops ?? [])].filter((p): p is LatLng => p != null),
+    [driver, pickup, dropoff, stops]
   );
 
   useEffect(() => {
@@ -70,6 +72,18 @@ export function TripMap({ driver, pickup, dropoff, followDriver = false }: TripM
       ) : null}
       {pickup ? <Marker coordinate={pickup} title="Pickup" pinColor={colors.accent} /> : null}
       {dropoff ? <Marker coordinate={dropoff} title="Dropoff" pinColor={colors.primary} /> : null}
+      {stops?.map((stop, index) => (
+        <Marker
+          key={`stop-${index}-${stop.latitude}-${stop.longitude}`}
+          coordinate={stop}
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+        >
+          <View style={styles.stopMarker}>
+            <Text style={styles.stopMarkerText}>{index + 1}</Text>
+          </View>
+        </Marker>
+      ))}
     </MapView>
   );
 }
@@ -101,5 +115,25 @@ const styles = StyleSheet.create({
     height: 14,
     borderRadius: 7,
     backgroundColor: colors.accent,
+  },
+  stopMarker: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: colors.white,
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: colors.black,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 3,
+  },
+  stopMarkerText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.primary,
   },
 });

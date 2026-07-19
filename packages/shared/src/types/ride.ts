@@ -21,6 +21,31 @@ export type VehicleClass =
 
 export type CancelledBy = 'rider' | 'driver' | 'system';
 
+export type RoutePointType = 'pickup' | 'stop' | 'dropoff';
+
+export type RoutePointStatus = 'pending' | 'arrived' | 'completed' | 'skipped';
+
+/**
+ * One point of a multi-stop itinerary (ride_route_points row), ordered by
+ * `seq` (0 = pickup … n-1 = dropoff). Single-destination rides have none —
+ * clients fall back to the flat pickup/dropoff columns on the ride.
+ */
+export interface RoutePoint {
+  id: string;
+  point_type: RoutePointType;
+  seq: number;
+  place_name: string | null;
+  formatted_address: string;
+  lat: number;
+  lng: number;
+  /** The leg ARRIVING at this point (null for pickup and when unknown). */
+  leg_distance_km: number | null;
+  leg_duration_min: number | null;
+  status: RoutePointStatus;
+  arrived_at: string | null;
+  completed_at: string | null;
+}
+
 export type RideEventType =
   | 'status_change'
   | 'location_update'
@@ -64,6 +89,12 @@ export interface Ride {
 
   rider_rating: number | null;
   driver_rating: number | null;
+
+  /**
+   * Ordered multi-stop itinerary, present when the server (or a client-side
+   * fetch) attaches it. Empty/absent for single-destination rides.
+   */
+  route_points?: RoutePoint[];
 }
 
 export interface RideEvent {
