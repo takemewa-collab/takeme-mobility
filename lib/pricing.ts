@@ -91,6 +91,12 @@ export interface FareBreakdown {
   bookingFee: number;
   /** Flat multi-stop fee: stopCount × stopFeePerStop(). 0 for direct trips. */
   stopFee: number;
+  /**
+   * Flat airport fee total (sum of the airport_rules fees for every airport
+   * leg on the trip). Like the booking and stop fees it is NOT surged.
+   * 0 for trips without airport context.
+   */
+  airportFeeTotal: number;
   surcharges: { id: string; label: string; amount: number }[];
   surchargeTotal: number;
   subtotal: number;
@@ -119,6 +125,8 @@ export function calculateFare(
     currency?: string;
     /** Number of intermediate stops on the route (0 for a direct trip). */
     stopCount?: number;
+    /** Total flat airport fees for the trip (server-resolved, never surged). */
+    airportFees?: number;
   } = {},
 ): FareBreakdown {
   const surge = opts.surgeMultiplier ?? 1.0;
@@ -129,6 +137,7 @@ export function calculateFare(
   const timeFare = round2(durationMin * tier.perMinRate);
   const bookingFee = tier.bookingFee;
   const stopFee = round2(Math.max(0, opts.stopCount ?? 0) * stopFeePerStop());
+  const airportFeeTotal = round2(Math.max(0, opts.airportFees ?? 0));
 
   // Apply surcharges
   const activeSurcharges = SURCHARGES.filter(s => {
@@ -138,9 +147,9 @@ export function calculateFare(
   });
   const surchargeTotal = round2(activeSurcharges.reduce((sum, s) => sum + s.amount, 0));
 
-  // Apply surge to ride cost (not booking fee, stop fee, or surcharges)
+  // Apply surge to ride cost (not booking fee, stop fee, airport fees, or surcharges)
   const rideCost = (baseFare + distanceFare + timeFare) * surge;
-  const subtotal = round2(rideCost + bookingFee + stopFee + surchargeTotal);
+  const subtotal = round2(rideCost + bookingFee + stopFee + airportFeeTotal + surchargeTotal);
 
   // Enforce minimum fare
   const minFareApplied = subtotal < tier.minFare;
@@ -152,6 +161,7 @@ export function calculateFare(
     timeFare,
     bookingFee,
     stopFee,
+    airportFeeTotal,
     surcharges: activeSurcharges.map(s => ({ id: s.id, label: s.label, amount: s.amount })),
     surchargeTotal,
     subtotal,
@@ -173,6 +183,7 @@ export function generateQuotes(
     surchargeIds?: string[];
     currency?: string;
     stopCount?: number;
+    airportFees?: number;
   } = {},
 ): QuoteResult[] {
   return ALL_TIERS.map(cls => {

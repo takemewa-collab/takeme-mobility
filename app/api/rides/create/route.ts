@@ -13,6 +13,12 @@ import {
 } from '@/lib/route-points';
 import { calculateRoute } from '@/lib/route-service';
 import { rateLimit } from '@/lib/rate-limit';
+import {
+  airportFee,
+  buildAirportSnapshot,
+  validateAirportContext,
+  type AirportSnapshot,
+} from '@/lib/airports/resolution';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/rides/create
@@ -23,6 +29,26 @@ import { rateLimit } from '@/lib/rate-limit';
 // ═══════════════════════════════════════════════════════════════════════════
 
 const vehicleClassSchema = z.enum(['economy', 'comfort', 'premium']);
+
+// Airport context: the rider app booked to a server-resolved airport service
+// point. Validated against live config below — the client is never trusted
+// to pick coordinates, terminals or fees on its own.
+const airportContextSchema = z.object({
+  direction: z.enum(['airport_pickup', 'airport_dropoff']),
+  airportId: z.string().uuid(),
+  servicePointId: z.string().uuid(),
+  airlineId: z.string().uuid().optional(),
+  terminalId: z.string().uuid().optional(),
+  flightNumber: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z0-9]{2,3}\s?[0-9]{1,4}[A-Z]?$/, 'Invalid flight number')
+    .optional(),
+  selectionMethod: z.enum(['airline', 'flight', 'manual', 'verified_fallback']),
+  /** For multi-stop rides: which route point this context describes. */
+  routePointSeq: z.number().int().min(0).max(4).optional(),
+});
 
 const requestSchema = z.object({
   // Locations
@@ -57,6 +83,10 @@ const requestSchema = z.object({
   // Multi-stop itinerary: pickup → up to 3 stops → dropoff, ordered by seq.
   // Absent → classic single-destination ride (fully backward compatible).
   routePoints: routePointsArraySchema.optional(),
+
+  // Airport legs on this trip (at most a pickup and a dropoff context).
+  // Absent → byte-identical legacy behavior.
+  airportContexts: z.array(airportContextSchema).max(2).optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -146,6 +176,86 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // 3b. Airport contexts — validate against live config, prove the booked
+    // coordinates are the server-resolved service point (never trust client
+    // coordinates AS the point), and compute the airport fee total. Snapshots
+    // are built BEFORE the ride row exists so a config read failure can never
+    // leave a ride without its promised airport context.
+    const AIRPORT_POINT_TOLERANCE_KM = 0.06; // 60 m
+    let airportFeeTotal = 0;
+    const preparedAirportContexts: Array<{
+      input: z.infer<typeof airportContextSchema>;
+      snapshot: AirportSnapshot;
+    }> = [];
+
+    if (body.airportContexts && body.airportContexts.length > 0) {
+      const seenScopes = new Set<string>();
+      for (const context of body.airportContexts) {
+        const scope = `${context.direction}:${context.routePointSeq ?? 'trip'}`;
+        if (seenScopes.has(scope)) {
+          return NextResponse.json(
+            { error: 'Duplicate airport context for the same trip leg.' },
+            { status: 400 },
+          );
+        }
+        seenScopes.add(scope);
+
+        const validation = await validateAirportContext({
+          airportId: context.airportId,
+          direction: context.direction,
+          servicePointId: context.servicePointId,
+          airlineId: context.airlineId ?? null,
+          terminalId: context.terminalId ?? null,
+        });
+        if (!validation.ok) {
+          return NextResponse.json({ error: validation.error }, { status: 400 });
+        }
+
+        // Which booked coordinates must match the resolved service point?
+        let target: { lat: number; lng: number } | null = null;
+        if (context.routePointSeq !== undefined) {
+          const point = orderedPoints?.find((p) => p.seq === context.routePointSeq);
+          if (!point) {
+            return NextResponse.json(
+              { error: 'Airport context references a route point that does not exist.' },
+              { status: 400 },
+            );
+          }
+          target = { lat: point.lat, lng: point.lng };
+        } else if (context.direction === 'airport_dropoff') {
+          target = { lat: body.dropoffLat, lng: body.dropoffLng };
+        } else {
+          target = { lat: body.pickupLat, lng: body.pickupLng };
+        }
+
+        const resolvedPoint = validation.servicePoint;
+        if (
+          haversineKm(target, { lat: resolvedPoint.lat, lng: resolvedPoint.lng }) >
+          AIRPORT_POINT_TOLERANCE_KM
+        ) {
+          return NextResponse.json(
+            { error: 'Airport selection is out of date — please reselect.' },
+            { status: 400 },
+          );
+        }
+
+        const fee = await airportFee(context.airportId, context.direction);
+        if (fee !== null) airportFeeTotal += fee;
+
+        const snapshot = await buildAirportSnapshot({
+          airportId: context.airportId,
+          direction: context.direction,
+          servicePointId: context.servicePointId,
+          airlineId: context.airlineId ?? null,
+          terminalId: context.terminalId ?? null,
+          flightNumber: context.flightNumber ?? null,
+          selectionMethod: context.selectionMethod,
+        });
+
+        preparedAirportContexts.push({ input: context, snapshot });
+      }
+    }
+
     // 4. Server-side fare verification — prevent client-side price manipulation
     const tier = TIERS[body.vehicleClass as VehicleClass];
     if (!tier) {
@@ -156,6 +266,7 @@ export async function POST(request: NextRequest) {
       surgeMultiplier: body.surgeMultiplier,
       currency: body.currency,
       stopCount,
+      airportFees: airportFeeTotal,
     });
 
     // Allow $1.00 tolerance for floating-point rounding differences
@@ -293,6 +404,58 @@ export async function POST(request: NextRequest) {
         );
       }
       rideData = inserted;
+    }
+
+    // 4b. Persist airport contexts with their immutable snapshots. A ride
+    // promised airport context may NEVER exist without it: any failure here
+    // deletes the just-created ride (points cascade) and aborts.
+    if (preparedAirportContexts.length > 0) {
+      const svcAirport = createServiceClient();
+      try {
+        // Resolve route_point_id by seq for multi-stop contexts.
+        const seqs = preparedAirportContexts
+          .map((c) => c.input.routePointSeq)
+          .filter((s): s is number => s !== undefined);
+        const pointIdBySeq = new Map<number, string>();
+        if (seqs.length > 0) {
+          const { data: ridePoints, error: pointsError } = await svcAirport
+            .from('ride_route_points')
+            .select('id, seq')
+            .eq('ride_id', rideData.id)
+            .in('seq', seqs);
+          if (pointsError) throw new Error(pointsError.message);
+          for (const p of ridePoints ?? []) pointIdBySeq.set(p.seq as number, p.id as string);
+          if (pointIdBySeq.size !== new Set(seqs).size) {
+            throw new Error('route points missing for airport context');
+          }
+        }
+
+        const { error: contextError } = await svcAirport.from('trip_airport_context').insert(
+          preparedAirportContexts.map(({ input, snapshot }) => ({
+            ride_id: rideData!.id,
+            route_point_id:
+              input.routePointSeq !== undefined
+                ? pointIdBySeq.get(input.routePointSeq) ?? null
+                : null,
+            direction: input.direction,
+            airport_id: input.airportId,
+            airline_id: input.airlineId ?? null,
+            terminal_id: input.terminalId ?? null,
+            service_point_id: input.servicePointId,
+            flight_number: input.flightNumber ?? null,
+            selection_method: input.selectionMethod,
+            snapshot,
+          })),
+        );
+        if (contextError) throw new Error(contextError.message);
+      } catch (contextErr) {
+        console.error('Airport context persistence failed — rolling back ride:', contextErr);
+        await svcAirport.from('rides').delete().eq('id', rideData.id);
+        return NextResponse.json(
+          { error: 'Could not save airport details — please retry.' },
+          { status: 500 },
+        );
+      }
     }
 
     // 5. Set up payment — authorize (hold funds) immediately

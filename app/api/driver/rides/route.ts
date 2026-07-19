@@ -66,12 +66,20 @@ export async function GET(request: NextRequest) {
       .eq('ride_id', ride.id)
       .order('seq', { ascending: true });
 
+    // Airport context snapshots (immutable, booked-time truth). Empty for
+    // non-airport trips — the driver app renders curb instructions from these.
+    const { data: airportContexts } = await svc
+      .from('trip_airport_context')
+      .select('id, direction, route_point_id, flight_number, selection_method, snapshot')
+      .eq('ride_id', ride.id);
+
     return NextResponse.json({
       ride: {
         ...ride,
         rider_name: rider?.full_name ?? 'Rider',
         rider_rating: rider?.rating ?? 5.0,
         route_points: routePoints ?? [],
+        airport_contexts: airportContexts ?? [],
       },
     });
   } catch (err) {

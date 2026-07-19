@@ -41,3 +41,50 @@ describe('multi-stop fare', () => {
     expect(a.total).toBe(b.total);
   });
 });
+
+describe('airport fees', () => {
+  const tier = TIERS.economy;
+  const km = 10;
+  const min = 20;
+
+  it('defaults to zero when no airport fees are passed', () => {
+    const fare = calculateFare(tier, km, min);
+    expect(fare.airportFeeTotal).toBe(0);
+  });
+
+  it('adds the flat fee total on top of the fare', () => {
+    const direct = calculateFare(tier, km, min);
+    const withFee = calculateFare(tier, km, min, { airportFees: 5 });
+    expect(withFee.airportFeeTotal).toBe(5);
+    expect(withFee.total).toBe(round2(direct.total + 5));
+    expect(withFee.subtotal).toBe(round2(direct.subtotal + 5));
+  });
+
+  it('does not surge the airport fee', () => {
+    const surged = calculateFare(tier, km, min, { airportFees: 5, surgeMultiplier: 2.0 });
+    const rideCost = (tier.baseFare + round2(km * tier.perKmRate) + round2(min * tier.perMinRate)) * 2.0;
+    const expected = round2(rideCost + tier.bookingFee + 5);
+    expect(surged.total).toBe(round2(Math.max(expected, tier.minFare)));
+    expect(surged.airportFeeTotal).toBe(5);
+  });
+
+  it('stacks with the stop fee, both unsurged', () => {
+    const fare = calculateFare(tier, km, min, { airportFees: 4.5, stopCount: 2, surgeMultiplier: 1.5 });
+    const rideCost = (tier.baseFare + round2(km * tier.perKmRate) + round2(min * tier.perMinRate)) * 1.5;
+    const expected = round2(rideCost + tier.bookingFee + round2(2 * stopFeePerStop()) + 4.5);
+    expect(fare.total).toBe(round2(Math.max(expected, tier.minFare)));
+  });
+
+  it('keeps the minimum-fare floor when a tiny trip carries an airport fee', () => {
+    const fare = calculateFare(tier, 0.2, 1, { airportFees: 1 });
+    expect(fare.total).toBeGreaterThanOrEqual(tier.minFare);
+    expect(fare.minFareApplied).toBe(fare.total === tier.minFare);
+  });
+
+  it('ignores negative fee totals defensively', () => {
+    const a = calculateFare(tier, km, min);
+    const b = calculateFare(tier, km, min, { airportFees: -3 });
+    expect(b.airportFeeTotal).toBe(0);
+    expect(b.total).toBe(a.total);
+  });
+});

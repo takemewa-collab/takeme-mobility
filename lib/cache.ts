@@ -38,4 +38,9 @@ export class TTLCache<T> {
     }
     this.cache.set(key, { value, expiresAt: Date.now() + this.ttlMs });
   }
+
+  /** Drop one entry immediately (e.g. after an admin publish invalidates it). */
+  delete(key: string): void {
+    this.cache.delete(key);
+  }
 }
