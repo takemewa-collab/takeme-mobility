@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { RoutePoint, RoutePointStatus } from '@takeme/shared';
 import { formatCurrency, formatDistanceMi, API, ApiError } from '@takeme/shared';
+import { AirportContextCard } from '@/components/airport-context-card';
 import { Button } from '@/components/ui';
 import { TripMap } from '@/components/trip-map';
 import { useDriverStatus } from '@/providers/driver-status';
@@ -72,6 +73,23 @@ export default function ActiveTripScreen() {
         : [],
     [itinerary, currentTarget],
   );
+
+  // Airport context for the CURRENT leg only: an intermediate airport stop is
+  // matched by route_point_id; the final dropoff is the airport_dropoff context
+  // with no route_point_id (also the legacy flat-columns case). The map target
+  // needs no change — the point/ride coordinates already ARE the resolved
+  // airport service point (booked that way).
+  const airportContexts = activeTrip?.airport_contexts;
+  const airportContext = useMemo(() => {
+    const contexts = airportContexts ?? [];
+    if (contexts.length === 0) return null;
+    if (currentTarget?.point_type === 'stop') {
+      return contexts.find((c) => c.route_point_id === currentTarget.id) ?? null;
+    }
+    return (
+      contexts.find((c) => c.direction === 'airport_dropoff' && c.route_point_id === null) ?? null
+    );
+  }, [airportContexts, currentTarget]);
 
   // Rows below the header: everything except the current target, in seq order.
   const otherPoints = useMemo(
@@ -162,6 +180,8 @@ export default function ActiveTripScreen() {
             </Text>
           </View>
         </View>
+
+        {airportContext ? <AirportContextCard context={airportContext} /> : null}
 
         {hasItinerary && otherPoints.length > 0 ? (
           <View style={styles.itinerary}>

@@ -9,7 +9,7 @@ import React, {
   useState,
 } from 'react';
 import { AppState } from 'react-native';
-import type { Ride, RideStatus, RoutePoint, RoutePointStatus } from '@takeme/shared';
+import type { AirportContext, Ride, RideStatus, RoutePoint, RoutePointStatus } from '@takeme/shared';
 import { ApiClient, API } from '@takeme/shared';
 import { getClerkToken } from '@/lib/clerk';
 import { useSupabase } from './supabase';
@@ -27,8 +27,14 @@ interface RiderInfo {
   rating: number;
 }
 
-/** The active trip always carries its (possibly empty) multi-stop itinerary. */
-export type ActiveTrip = Ride & { route_points: RoutePoint[] };
+/**
+ * The active trip always carries its (possibly empty) multi-stop itinerary and
+ * airport contexts.
+ */
+export type ActiveTrip = Ride & {
+  route_points: RoutePoint[];
+  airport_contexts: AirportContext[];
+};
 
 interface TripState {
   activeTrip: ActiveTrip | null;
@@ -42,6 +48,7 @@ type TripAction =
   | { type: 'SET_POINTS'; rideId: string; points: RoutePoint[] }
   | { type: 'UPSERT_POINT'; rideId: string; point: RoutePoint }
   | { type: 'SET_POINT_STATUS'; pointId: string; status: RoutePointStatus }
+  | { type: 'SET_AIRPORT_CONTEXTS'; rideId: string; contexts: AirportContext[] }
   | { type: 'SET_RIDER_INFO'; info: RiderInfo | null }
   | { type: 'SET_LOADING'; loading: boolean }
   | { type: 'SET_ERROR'; error: string | null }
@@ -75,12 +82,19 @@ function tripReducer(state: TripState, action: TripAction): TripState {
   switch (action.type) {
     case 'SET_TRIP': {
       if (!action.trip) return { ...state, activeTrip: null, error: null };
-      // Ride-row realtime updates arrive without route_points — keep the ones
-      // we already have for the same ride instead of wiping the itinerary.
+      // Ride-row realtime updates arrive without route_points or
+      // airport_contexts — keep the ones we already have for the same ride
+      // instead of wiping them.
       const prev = state.activeTrip;
-      const route_points =
-        action.trip.route_points ?? (prev && prev.id === action.trip.id ? prev.route_points : []);
-      return { ...state, activeTrip: { ...action.trip, route_points }, error: null };
+      const sameRide = prev != null && prev.id === action.trip.id;
+      const route_points = action.trip.route_points ?? (sameRide ? prev.route_points : []);
+      const airport_contexts =
+        action.trip.airport_contexts ?? (sameRide ? prev.airport_contexts : []);
+      return {
+        ...state,
+        activeTrip: { ...action.trip, route_points, airport_contexts },
+        error: null,
+      };
     }
     case 'SET_POINTS': {
       if (!state.activeTrip || state.activeTrip.id !== action.rideId) return state;
@@ -111,6 +125,13 @@ function tripReducer(state: TripState, action: TripAction): TripState {
             p.id === action.pointId ? { ...p, status: action.status } : p,
           ),
         },
+      };
+    }
+    case 'SET_AIRPORT_CONTEXTS': {
+      if (!state.activeTrip || state.activeTrip.id !== action.rideId) return state;
+      return {
+        ...state,
+        activeTrip: { ...state.activeTrip, airport_contexts: action.contexts },
       };
     }
     case 'SET_RIDER_INFO':
@@ -198,6 +219,21 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     [supabase],
   );
 
+  // Direct read of the trip's airport contexts (driver SELECT RLS). Snapshots
+  // are immutable, so there is no realtime subscription — this runs on
+  // restore/refresh and when a ride lands via the assignment channel. The
+  // snapshot column is jsonb, so no numeric coercion is needed.
+  const fetchAirportContexts = useCallback(
+    async (rideId: string): Promise<AirportContext[]> => {
+      const { data } = await supabase
+        .from('trip_airport_context')
+        .select('id, route_point_id, direction, flight_number, selection_method, snapshot')
+        .eq('ride_id', rideId);
+      return (data ?? []) as AirportContext[];
+    },
+    [supabase],
+  );
+
   const restoreActiveTrip = useCallback(async () => {
     if (!user) return;
 
@@ -211,7 +247,8 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
             const route_points = (data.ride.route_points ?? [])
               .map((p) => normalizeRoutePoint(p as unknown as Record<string, unknown>))
               .filter((p): p is RoutePoint => p != null);
-            dispatch({ type: 'SET_TRIP', trip: { ...data.ride, route_points } });
+            const airport_contexts = data.ride.airport_contexts ?? [];
+            dispatch({ type: 'SET_TRIP', trip: { ...data.ride, route_points, airport_contexts } });
             if (data.ride.rider_id) {
               await fetchRiderInfo(data.ride.rider_id);
             }
@@ -246,8 +283,11 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
 
       if (error) throw error;
       if (ride) {
-        const route_points = await fetchRoutePoints(ride.id);
-        dispatch({ type: 'SET_TRIP', trip: { ...ride, route_points } });
+        const [route_points, airport_contexts] = await Promise.all([
+          fetchRoutePoints(ride.id),
+          fetchAirportContexts(ride.id),
+        ]);
+        dispatch({ type: 'SET_TRIP', trip: { ...ride, route_points, airport_contexts } });
       } else {
         dispatch({ type: 'SET_TRIP', trip: null });
       }
@@ -261,7 +301,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     } finally {
       dispatch({ type: 'SET_LOADING', loading: false });
     }
-  }, [user, supabase, apiClient, fetchRiderInfo, fetchRoutePoints]);
+  }, [user, supabase, apiClient, fetchRiderInfo, fetchRoutePoints, fetchAirportContexts]);
 
   const clearTrip = useCallback(() => {
     dispatch({ type: 'CLEAR' });
@@ -318,10 +358,16 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
           if (ride.id === activeTripId) return; // already tracked by the other channel
           dispatch({ type: 'SET_TRIP', trip: ride });
           if (ride.rider_id) fetchRiderInfo(ride.rider_id);
-          // The row payload carries no itinerary — load it separately.
+          // The row payload carries no itinerary or airport contexts — load
+          // them separately.
           fetchRoutePoints(ride.id).then((points) => {
             if (points.length > 0) {
               dispatch({ type: 'SET_POINTS', rideId: ride.id, points });
+            }
+          });
+          fetchAirportContexts(ride.id).then((contexts) => {
+            if (contexts.length > 0) {
+              dispatch({ type: 'SET_AIRPORT_CONTEXTS', rideId: ride.id, contexts });
             }
           });
         },
@@ -331,7 +377,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [driverId, activeTripId, supabase, fetchRiderInfo, fetchRoutePoints]);
+  }, [driverId, activeTripId, supabase, fetchRiderInfo, fetchRoutePoints, fetchAirportContexts]);
 
   // On return to the foreground, re-sync in case realtime dropped events while
   // backgrounded (also the polling-style safety net if the socket was down).

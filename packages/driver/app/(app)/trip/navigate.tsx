@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Alert, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { formatRating, API } from '@takeme/shared';
+import { AirportContextCard } from '@/components/airport-context-card';
 import { Button } from '@/components/ui';
 import { TripMap } from '@/components/trip-map';
 import { TripMessagesSheet } from '@/components/trip-messages';
@@ -18,6 +19,12 @@ export default function NavigateScreen() {
   const { location } = useDriverStatus();
   const [loading, setLoading] = useState(false);
   const [messagesOpen, setMessagesOpen] = useState(false);
+
+  // Pickup at an airport: show the where-exactly card. The pickup coordinates
+  // on the ride already ARE the resolved service point (booked that way), so
+  // the navigation target needs no change.
+  const airportPickup =
+    activeTrip?.airport_contexts.find((c) => c.direction === 'airport_pickup') ?? null;
 
   const handleArrived = async () => {
     if (!activeTrip || !apiClient || loading) return;
@@ -54,6 +61,8 @@ export default function NavigateScreen() {
         <Text style={styles.address}>
           {activeTrip?.pickup_address ?? 'Loading...'}
         </Text>
+
+        {airportPickup ? <AirportContextCard context={airportPickup} /> : null}
 
         <View style={styles.riderInfo}>
           <View style={styles.riderAvatar}>

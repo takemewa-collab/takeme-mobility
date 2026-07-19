@@ -46,6 +46,67 @@ export interface RoutePoint {
   completed_at: string | null;
 }
 
+export type AirportContextDirection = 'airport_pickup' | 'airport_dropoff';
+
+/** One ordered instruction shown to the driver at the airport. */
+export interface AirportInstruction {
+  title: string;
+  body: string;
+}
+
+/**
+ * Immutable copy of the airport configuration taken when the ride was booked
+ * (trip_airport_context.snapshot). Clients render this snapshot, never live
+ * airport config — it cannot change under an in-flight trip.
+ */
+export interface AirportContextSnapshot {
+  airport: {
+    id: string;
+    iata_code: string;
+    display_name: string;
+  };
+  direction: AirportContextDirection;
+  airline?: {
+    display_name: string;
+    iata_code: string;
+  };
+  terminal?: {
+    code: string;
+    name: string;
+  };
+  service_point: {
+    id: string;
+    point_type: string;
+    name: string;
+    lat: number;
+    lng: number;
+    level: string | null;
+    door: string | null;
+    zone: string | null;
+    island: string | null;
+  };
+  instructions: {
+    driver: AirportInstruction[];
+  };
+  /** Airport access fee snapshot; shape is server-owned and not rendered here. */
+  fee?: unknown;
+  flight_number?: string;
+}
+
+/**
+ * Airport context attached to a ride (trip_airport_context row). Anchored to a
+ * specific stop via `route_point_id`, or to the ride-level pickup/dropoff when
+ * null.
+ */
+export interface AirportContext {
+  id: string;
+  direction: AirportContextDirection;
+  route_point_id: string | null;
+  flight_number: string | null;
+  selection_method: string;
+  snapshot: AirportContextSnapshot;
+}
+
 export type RideEventType =
   | 'status_change'
   | 'location_update'
@@ -95,6 +156,12 @@ export interface Ride {
    * fetch) attaches it. Empty/absent for single-destination rides.
    */
   route_points?: RoutePoint[];
+
+  /**
+   * Airport contexts for any airport legs of the trip, present when the server
+   * attaches them. Empty/absent for rides that never touch an airport.
+   */
+  airport_contexts?: AirportContext[];
 }
 
 export interface RideEvent {
