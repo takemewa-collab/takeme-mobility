@@ -35,6 +35,21 @@ interface Ride {
   rider_id: string;
 }
 
+interface RoutePoint {
+  id: string;
+  point_type: 'pickup' | 'stop' | 'dropoff';
+  seq: number;
+  place_name: string | null;
+  formatted_address: string;
+  lat: number;
+  lng: number;
+  leg_distance_km: number | null;
+  leg_duration_min: number | null;
+  status: 'pending' | 'arrived' | 'completed' | 'skipped';
+  arrived_at: string | null;
+  completed_at: string | null;
+}
+
 interface RideDetail {
   ride: Ride & {
     rider_rating: number | null;
@@ -59,6 +74,8 @@ interface RideDetail {
     created_at: string;
   }>;
   fraud_score: { score: number; checks: Record<string, unknown>; flagged: boolean; auto_cancelled: boolean } | null;
+  // Ordered multi-stop itinerary; empty for single-destination rides.
+  route_points: RoutePoint[];
 }
 
 const TABS = [
@@ -78,6 +95,13 @@ const STATUS_CLASSES: Record<string, string> = {
   in_progress: 'bg-emerald-500/15 text-emerald-400',
   completed: 'bg-[#1D6AE5]/10 text-[#1D6AE5]',
   cancelled: 'bg-red-500/15 text-red-400',
+};
+
+const POINT_STATUS_CLASSES: Record<string, string> = {
+  pending: 'bg-zinc-500/15 text-[#86868b]',
+  arrived: 'bg-blue-500/15 text-blue-400',
+  completed: 'bg-emerald-500/15 text-emerald-400',
+  skipped: 'bg-amber-500/15 text-amber-400',
 };
 
 const usd = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -405,6 +429,67 @@ export default function AdminRidesPage() {
                   />
                 </div>
               </Card>
+
+              {/* Route (multi-stop itinerary) */}
+              {detail.route_points.length > 0 && (
+                <Card title="Route">
+                  <div className="space-y-4">
+                    {detail.route_points.map((p, i) => {
+                      const stopNumber = detail.route_points
+                        .slice(0, i + 1)
+                        .filter((q) => q.point_type === 'stop').length;
+                      const label =
+                        p.point_type === 'pickup'
+                          ? 'Pickup'
+                          : p.point_type === 'dropoff'
+                            ? 'Destination'
+                            : `Stop ${stopNumber}`;
+                      const skipped = p.status === 'skipped';
+                      const leg = [
+                        p.leg_distance_km != null ? `${Number(p.leg_distance_km).toFixed(1)} km` : null,
+                        p.leg_duration_min != null ? `${Math.round(Number(p.leg_duration_min))} min` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ');
+                      return (
+                        <div key={p.id} className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex rounded-full bg-[#d2d2d7]/60 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[#6e6e73]">
+                              {label}
+                            </span>
+                            <span
+                              className={`inline-flex rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
+                                POINT_STATUS_CLASSES[p.status] ?? 'bg-zinc-500/15 text-[#86868b]'
+                              }`}
+                            >
+                              {p.status}
+                            </span>
+                            {leg && <span className="ml-auto text-[10px] text-[#86868b] whitespace-nowrap">{leg}</span>}
+                          </div>
+                          <p
+                            className={`mt-1 text-xs font-medium ${
+                              skipped ? 'text-[#86868b] line-through' : 'text-[#1d1d1f]'
+                            }`}
+                          >
+                            {p.place_name ?? p.formatted_address}
+                          </p>
+                          <p className="mt-0.5 truncate text-[10px] text-[#86868b]">{p.formatted_address}</p>
+                          {(p.arrived_at || p.completed_at) && (
+                            <p className="mt-0.5 text-[10px] text-[#86868b]">
+                              {[
+                                p.arrived_at ? `Arrived ${fmtTime(p.arrived_at)}` : null,
+                                p.completed_at ? `Completed ${fmtTime(p.completed_at)}` : null,
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Card>
+              )}
 
               {/* Fare breakdown */}
               <Card title="Fare">
