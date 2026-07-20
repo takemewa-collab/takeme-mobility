@@ -115,7 +115,7 @@ export default function BackgroundCheckScreen() {
             >
               <Text style={styles.disclosureLabel}>{label}</Text>
               {consent ? (
-                <Text style={styles.acceptedText}>Accepted ✓</Text>
+                <Text style={styles.acceptedText}>Accepted</Text>
               ) : (
                 <Text style={styles.reviewText}>Review ›</Text>
               )}

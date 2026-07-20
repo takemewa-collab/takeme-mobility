@@ -192,7 +192,7 @@ export default function ActiveTripScreen() {
             {otherPoints.map((p) => (
               <View key={p.id} style={styles.itineraryRow}>
                 <Text style={styles.itineraryBullet}>
-                  {p.status === 'completed' ? '✓' : p.status === 'skipped' ? '–' : '•'}
+                  {p.status === 'completed' ? '●' : p.status === 'skipped' ? '–' : '○'}
                 </Text>
                 <Text
                   style={[

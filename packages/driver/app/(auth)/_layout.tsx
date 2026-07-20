@@ -16,12 +16,15 @@ export default function AuthLayout() {
   }
 
   if (user) {
-    return <Redirect href="/(app)/(tabs)/dashboard" />;
+    // Never assume activation from a session: the Activation Center is the
+    // routing choke point and forwards eligible drivers to the dashboard.
+    return <Redirect href="/onboarding" />;
   }
 
   return (
     <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
       <Stack.Screen name="login" />
+      <Stack.Screen name="phone" />
       <Stack.Screen name="verify" />
     </Stack>
   );

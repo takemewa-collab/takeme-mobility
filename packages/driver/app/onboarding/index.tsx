@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import { Redirect, useFocusEffect, useRouter } from 'expo-router';
+import { decideDestination } from '@/lib/activation-route';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
 import { Button } from '@/components/ui';
@@ -141,7 +142,7 @@ export default function ActivationCenterScreen() {
     return <ErrorView message={error} onRetry={() => void refresh()} />;
   }
 
-  if (state.activation.decision === 'eligible' && state.driver.exists) {
+  if (decideDestination(state) === 'dashboard') {
     return <Redirect href="/(app)/(tabs)/dashboard" />;
   }
 

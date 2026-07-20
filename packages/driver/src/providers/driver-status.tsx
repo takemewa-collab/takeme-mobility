@@ -4,8 +4,10 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
+import { AppState } from 'react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import type { DriverStatus, Coordinates } from '@takeme/shared';
@@ -15,10 +17,17 @@ import type { ActivationState } from '@/types/onboarding';
 import { useAuth } from './auth';
 
 const BACKGROUND_LOCATION_TASK = 'DRIVER_LOCATION_BROADCAST';
+const FIRST_FIX_TIMEOUT_MS = 20_000;
+
+export type LocationPermission = 'undetermined' | 'granted' | 'denied';
+export type LocationStatus = 'idle' | 'locating' | 'available' | 'timeout';
 
 interface DriverStatusState {
   status: DriverStatus;
   location: Coordinates | null;
+  locationPermission: LocationPermission;
+  /** Lifecycle of the current fix attempt — never an endless spinner. */
+  locationStatus: LocationStatus;
   isLocationPermitted: boolean;
   isBackgroundPermitted: boolean;
   loading: boolean;
@@ -31,6 +40,10 @@ interface DriverStatusContextValue extends DriverStatusState {
   goOnline: () => Promise<void>;
   goOffline: () => Promise<void>;
   clearActivationBlock: () => void;
+  /** Contextual permission request — call from UI with an explanation shown. */
+  requestLocationPermission: () => Promise<boolean>;
+  /** Restart the fix attempt after a timeout. */
+  retryLocation: () => void;
 }
 
 const DriverStatusContext = createContext<DriverStatusContextValue | null>(null);
@@ -41,12 +54,15 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
   const [state, setState] = useState<DriverStatusState>({
     status: 'offline',
     location: null,
+    locationPermission: 'undetermined',
+    locationStatus: 'idle',
     isLocationPermitted: false,
     isBackgroundPermitted: false,
     loading: false,
     error: null,
     activationBlock: null,
   });
+  const [watchGeneration, setWatchGeneration] = useState(0);
 
   const apiClient = useMemo(
     () =>
@@ -57,22 +73,47 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
     [],
   );
 
-  // Request location permissions on mount
-  useEffect(() => {
-    (async () => {
-      const fg = await Location.requestForegroundPermissionsAsync();
-      const fgGranted = fg.status === 'granted';
-      setState((prev) => ({ ...prev, isLocationPermitted: fgGranted }));
-
-      if (fgGranted) {
-        const bg = await Location.requestBackgroundPermissionsAsync();
-        setState((prev) => ({
-          ...prev,
-          isBackgroundPermitted: bg.status === 'granted',
-        }));
-      }
-    })();
+  const applyPermission = useCallback((status: Location.PermissionStatus) => {
+    const permission: LocationPermission =
+      status === Location.PermissionStatus.GRANTED
+        ? 'granted'
+        : status === Location.PermissionStatus.DENIED
+          ? 'denied'
+          : 'undetermined';
+    setState((prev) => ({
+      ...prev,
+      locationPermission: permission,
+      isLocationPermitted: permission === 'granted',
+    }));
+    return permission;
   }, []);
+
+  // CHECK (never request) permission on mount, and re-check when the app
+  // returns to the foreground — that's how a Settings round-trip lands.
+  useEffect(() => {
+    let alive = true;
+    const check = async () => {
+      const fg = await Location.getForegroundPermissionsAsync();
+      if (!alive) return;
+      applyPermission(fg.status);
+      const bg = await Location.getBackgroundPermissionsAsync();
+      if (!alive) return;
+      setState((prev) => ({ ...prev, isBackgroundPermitted: bg.status === 'granted' }));
+    };
+    void check();
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') void check();
+    });
+    return () => {
+      alive = false;
+      sub.remove();
+    };
+  }, [applyPermission]);
+
+  const requestLocationPermission = useCallback(async (): Promise<boolean> => {
+    const fg = await Location.requestForegroundPermissionsAsync();
+    return applyPermission(fg.status) === 'granted';
+  }, [applyPermission]);
 
   // Fetch current driver status on login. The endpoint wraps the record in
   // { driver: { status } } — parsing that wrong left the toggle stuck on
@@ -94,39 +135,85 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
     })();
   }, [user, apiClient]);
 
-  // Foreground position watcher: keeps `location` live for the in-app map
-  // whenever the driver is online. Publishing to the platform stays with the
-  // background task; this only feeds the local UI (blue dot, map centering).
+  // Foreground position watcher: runs whenever permission is granted — the
+  // map needs a location for offline drivers too. Seeds from the last known
+  // position for instant render, then live-updates; a fix attempt that gets
+  // nothing within the timeout surfaces `timeout` instead of spinning.
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (state.status === 'offline' || !state.isLocationPermitted) return;
+    if (state.locationPermission !== 'granted') {
+      setState((prev) =>
+        prev.locationStatus === 'idle' ? prev : { ...prev, locationStatus: 'idle' },
+      );
+      return;
+    }
 
     let sub: Location.LocationSubscription | null = null;
     let alive = true;
+    let gotFix = false;
+
+    setState((prev) => ({
+      ...prev,
+      locationStatus: prev.location ? 'available' : 'locating',
+    }));
+
     (async () => {
-      sub = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.Balanced,
-          timeInterval: DRIVER_LOCATION_INTERVAL_MS,
-          distanceInterval: 10,
-        },
-        (fix) => {
-          if (!alive) return;
-          setState((prev) => ({
-            ...prev,
-            location: { latitude: fix.coords.latitude, longitude: fix.coords.longitude },
-          }));
-        },
-      );
+      const last = await Location.getLastKnownPositionAsync().catch(() => null);
+      if (alive && last) {
+        gotFix = true;
+        setState((prev) => ({
+          ...prev,
+          location: {
+            latitude: last.coords.latitude,
+            longitude: last.coords.longitude,
+          },
+          locationStatus: 'available',
+        }));
+      }
+      try {
+        sub = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.Balanced,
+            timeInterval: DRIVER_LOCATION_INTERVAL_MS,
+            distanceInterval: 10,
+          },
+          (fix) => {
+            if (!alive) return;
+            gotFix = true;
+            if (timeoutRef.current) clearTimeout(timeoutRef.current);
+            setState((prev) => ({
+              ...prev,
+              location: { latitude: fix.coords.latitude, longitude: fix.coords.longitude },
+              locationStatus: 'available',
+            }));
+          },
+        );
+      } catch {
+        if (alive && !gotFix) {
+          setState((prev) => ({ ...prev, locationStatus: 'timeout' }));
+        }
+      }
     })();
+
+    timeoutRef.current = setTimeout(() => {
+      if (alive && !gotFix) {
+        setState((prev) => ({ ...prev, locationStatus: 'timeout' }));
+      }
+    }, FIRST_FIX_TIMEOUT_MS);
 
     return () => {
       alive = false;
       sub?.remove();
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
-  }, [state.status, state.isLocationPermitted]);
+  }, [state.locationPermission, watchGeneration]);
+
+  const retryLocation = useCallback(() => {
+    setWatchGeneration((generation) => generation + 1);
+  }, []);
 
   const goOnline = useCallback(async () => {
-    if (!state.isLocationPermitted) {
+    if (state.locationPermission !== 'granted') {
       setState((prev) => ({
         ...prev,
         error: 'Location permission required to go online',
@@ -139,14 +226,21 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
       // Update server status
       await apiClient.put(API.DRIVER_STATUS, { status: 'available' });
 
-      // Start background location broadcasting
-      if (state.isBackgroundPermitted) {
+      // Background broadcasting needs Always permission; request it here, in
+      // context, the first time the driver actually goes online.
+      let backgroundPermitted = state.isBackgroundPermitted;
+      if (!backgroundPermitted) {
+        const bg = await Location.requestBackgroundPermissionsAsync();
+        backgroundPermitted = bg.status === 'granted';
+        setState((prev) => ({ ...prev, isBackgroundPermitted: backgroundPermitted }));
+      }
+      if (backgroundPermitted) {
         await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
           accuracy: Location.Accuracy.High,
           timeInterval: DRIVER_LOCATION_INTERVAL_MS,
           distanceInterval: 10,
           foregroundService: {
-            notificationTitle: 'Takeme Driver',
+            notificationTitle: 'TAKEME Driver',
             notificationBody: "You're online and receiving ride requests",
             notificationColor: '#111111',
           },
@@ -178,7 +272,7 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
         error: err instanceof Error ? err.message : 'Failed to go online',
       }));
     }
-  }, [state.isLocationPermitted, state.isBackgroundPermitted, apiClient]);
+  }, [state.locationPermission, state.isBackgroundPermitted, apiClient]);
 
   const goOffline = useCallback(async () => {
     setState((prev) => ({ ...prev, loading: true, error: null }));
@@ -208,8 +302,15 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
   }, []);
 
   const value = useMemo(
-    () => ({ ...state, goOnline, goOffline, clearActivationBlock }),
-    [state, goOnline, goOffline, clearActivationBlock],
+    () => ({
+      ...state,
+      goOnline,
+      goOffline,
+      clearActivationBlock,
+      requestLocationPermission,
+      retryLocation,
+    }),
+    [state, goOnline, goOffline, clearActivationBlock, requestLocationPermission, retryLocation],
   );
 
   return (

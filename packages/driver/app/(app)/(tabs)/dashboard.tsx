@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Switch, Alert, Pressable } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Linking, Pressable, StyleSheet, Switch, Text, View, Alert } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import * as Notifications from 'expo-notifications';
+import { Ionicons } from '@expo/vector-icons';
 import { formatCurrency, API } from '@takeme/shared';
 import { TripMap } from '@/components/trip-map';
 import { registerForPush } from '@/lib/register-push';
@@ -13,52 +14,56 @@ import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing, borderRadius } from '@/theme/spacing';
 
+interface WalletSummary {
+  available: number;
+  pending: number;
+  lifetime: number;
+}
+
 export default function DashboardScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const {
     status,
     goOnline,
     goOffline,
     loading,
-    isLocationPermitted,
     error,
     location,
+    locationPermission,
+    locationStatus,
+    requestLocationPermission,
+    retryLocation,
     activationBlock,
     clearActivationBlock,
   } = useDriverStatus();
   const { activeTrip, apiClient } = useTrip();
   const { state: onboardingState } = useOnboarding();
 
-  const [dashData, setDashData] = useState<{
-    trips: number; hours: number; earned: number;
-  }>({ trips: 0, hours: 0, earned: 0 });
+  const [wallet, setWallet] = useState<WalletSummary | null>(null);
 
   const isOnline = status === 'available' || status === 'busy' || status === 'on_trip';
 
   const handleToggle = () => {
-    if (isOnline) goOffline();
-    else goOnline();
+    if (isOnline) void goOffline();
+    else void goOnline();
   };
 
-  // Fetch dashboard stats
+  // Wallet summary — real data only; hidden entirely until it loads.
   useEffect(() => {
     if (!apiClient) return;
-    const fetchDash = async () => {
+    let alive = true;
+    (async () => {
       try {
-        const data = await apiClient.get<{
-          wallet?: { available: number; pending: number; lifetime: number };
-          transactions?: { amount: number }[];
-        }>(API.DRIVER_DASHBOARD);
-        setDashData({
-          trips: data.transactions?.length ?? 0,
-          hours: 0,
-          earned: data.wallet?.available ?? 0,
-        });
+        const data = await apiClient.get<{ wallet?: WalletSummary }>(API.DRIVER_DASHBOARD);
+        if (alive && data.wallet) setWallet(data.wallet);
       } catch {
-        // Dashboard not critical, fail silently
+        // Non-critical; the panel simply doesn't render.
       }
+    })();
+    return () => {
+      alive = false;
     };
-    fetchDash();
   }, [apiClient, status]);
 
   // Auto-navigate to incoming ride when one is assigned
@@ -68,8 +73,8 @@ export default function DashboardScreen() {
     }
   }, [activeTrip?.status, router]);
 
-  // Register for push once we have an authenticated API client, and route to
-  // the incoming screen when the driver taps a ride-request notification.
+  // Register for push once we have an authenticated API client, and route
+  // notification taps to the right surface.
   useEffect(() => {
     if (apiClient) registerForPush(apiClient);
     const sub = Notifications.addNotificationResponseReceivedListener((response) => {
@@ -100,65 +105,136 @@ export default function DashboardScreen() {
     );
   }, [activationBlock, clearActivationBlock, router]);
 
+  // Defense in depth: the (app) gate normally keeps unactivated drivers out.
   const needsSetup =
     onboardingState != null && onboardingState.activation.decision !== 'eligible';
 
+  const showMap = locationPermission === 'granted' && location != null;
+
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <View style={styles.container}>
       <View style={styles.mapContainer}>
-        <TripMap driver={location} followDriver />
-        <View style={styles.mapBadge}>
-          <Text style={styles.mapBadgeText}>
-            {isOnline ? 'Waiting for ride requests…' : "You're offline"}
-          </Text>
+        {showMap ? (
+          <TripMap driver={location} followDriver />
+        ) : (
+          <LocationSurface
+            permission={locationPermission}
+            status={locationStatus}
+            onRequest={() => void requestLocationPermission()}
+            onOpenSettings={() => void Linking.openSettings()}
+            onRetry={retryLocation}
+          />
+        )}
+
+        {/* Single, compact status control floating over the map. */}
+        <View style={[styles.statusPill, { top: insets.top + spacing.md }]}>
+          <View
+            style={[
+              styles.statusDot,
+              { backgroundColor: isOnline ? colors.statusApproved : colors.gray400 },
+            ]}
+          />
+          <Text style={styles.statusPillText}>{isOnline ? 'Online' : 'Offline'}</Text>
+          <Switch
+            value={isOnline}
+            onValueChange={handleToggle}
+            disabled={loading || (!isOnline && (needsSetup || locationPermission !== 'granted'))}
+            trackColor={{ false: colors.gray300, true: colors.primary }}
+            thumbColor={colors.white}
+            accessibilityLabel={isOnline ? 'Go offline' : 'Go online'}
+          />
         </View>
       </View>
 
-      <View style={styles.statusCard}>
-        {needsSetup && (
+      <View style={styles.sheet}>
+        {needsSetup ? (
+          <View style={styles.setupBlock}>
+            <Text style={styles.setupTitle}>Complete your application to go online</Text>
+            <Text style={styles.setupHint}>
+              A few steps still need your attention before you can drive.
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+              onPress={() => router.push('/onboarding')}
+            >
+              <Text style={styles.primaryButtonText}>Continue setup</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <>
+            <Text style={styles.sheetHint}>
+              {isOnline
+                ? 'Waiting for ride requests near you.'
+                : 'Go online when you’re ready to receive requests.'}
+            </Text>
+            {error ? <Text style={styles.error}>{error}</Text> : null}
+            {wallet ? (
+              <View style={styles.statsRow}>
+                <StatCard label="Available" value={formatCurrency(wallet.available)} />
+                <StatCard label="Pending" value={formatCurrency(wallet.pending)} />
+                <StatCard label="Lifetime" value={formatCurrency(wallet.lifetime)} />
+              </View>
+            ) : null}
+          </>
+        )}
+      </View>
+    </View>
+  );
+}
+
+function LocationSurface({
+  permission,
+  status,
+  onRequest,
+  onOpenSettings,
+  onRetry,
+}: {
+  permission: 'undetermined' | 'granted' | 'denied';
+  status: 'idle' | 'locating' | 'available' | 'timeout';
+  onRequest: () => void;
+  onOpenSettings: () => void;
+  onRetry: () => void;
+}) {
+  let title = 'Turn on location';
+  let body = 'TAKEME uses your location to show your position and match you with nearby riders.';
+  let actionLabel = 'Allow location';
+  let action = onRequest;
+
+  if (permission === 'denied') {
+    title = 'Location is off';
+    body = 'Location permission is required to drive. Turn it on in Settings to continue.';
+    actionLabel = 'Open Settings';
+    action = onOpenSettings;
+  } else if (permission === 'granted' && (status === 'locating' || status === 'idle')) {
+    title = 'Finding your location';
+    body = 'This usually takes a few seconds.';
+    actionLabel = '';
+    action = onRetry;
+  } else if (permission === 'granted' && status === 'timeout') {
+    title = 'Location unavailable';
+    body = 'We couldn’t get a GPS fix. Move to an open area or try again.';
+    actionLabel = 'Try again';
+    action = onRetry;
+  }
+
+  return (
+    <View style={styles.locationSurface}>
+      <View style={styles.locationCard}>
+        <Ionicons name="location-outline" size={28} color={colors.text} />
+        <Text style={styles.locationTitle}>{title}</Text>
+        <Text style={styles.locationBody}>{body}</Text>
+        {actionLabel ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Finish your setup"
-            onPress={() => router.push('/onboarding')}
-            style={({ pressed }) => [styles.setupCard, pressed && styles.setupCardPressed]}
+            style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+            onPress={action}
           >
-            <View style={styles.setupText}>
-              <Text style={styles.setupTitle}>Finish your setup</Text>
-              <Text style={styles.setupHint}>Complete your activation steps to go online</Text>
-            </View>
-            <Text style={styles.setupChevron}>›</Text>
+            <Text style={styles.primaryButtonText}>{actionLabel}</Text>
           </Pressable>
-        )}
-        <View style={styles.toggleRow}>
-          <View>
-            <Text style={styles.statusLabel}>{isOnline ? 'Online' : 'Offline'}</Text>
-            <Text style={styles.statusHint}>
-              {isOnline ? 'Receiving ride requests' : 'Toggle on to start earning'}
-            </Text>
-          </View>
-          <View style={styles.toggleContainer}>
-            <Switch
-              value={isOnline}
-              onValueChange={handleToggle}
-              disabled={loading || !isLocationPermitted}
-              trackColor={{ false: colors.gray300, true: colors.accent }}
-              thumbColor={colors.white}
-            />
-          </View>
-        </View>
-
-        {!isLocationPermitted && (
-          <Text style={styles.warning}>Location permission required to go online</Text>
-        )}
-        {error && <Text style={styles.error}>{error}</Text>}
-
-        <View style={styles.statsRow}>
-          <StatCard label="Trips" value={String(dashData.trips)} />
-          <StatCard label="Hours" value={dashData.hours.toFixed(1)} />
-          <StatCard label="Earned" value={formatCurrency(dashData.earned)} />
-        </View>
+        ) : null}
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -174,52 +250,85 @@ function StatCard({ label, value }: { label: string; value: string }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   mapContainer: { flex: 1, backgroundColor: colors.gray100 },
-  mapBadge: {
+  statusPill: {
     position: 'absolute',
-    top: spacing.lg,
     alignSelf: 'center',
-    backgroundColor: colors.white,
-    borderRadius: borderRadius.full,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    shadowColor: colors.black,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  mapBadgeText: { ...typography.caption, color: colors.text },
-  statusCard: {
-    backgroundColor: colors.white, borderTopLeftRadius: borderRadius.xl, borderTopRightRadius: borderRadius.xl,
-    padding: spacing['2xl'], shadowColor: colors.black, shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.08, shadowRadius: 12, elevation: 8,
-  },
-  setupCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 56,
+    gap: spacing.sm,
+    backgroundColor: colors.white,
+    borderRadius: borderRadius.full,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: borderRadius.lg,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
-    marginBottom: spacing.lg,
+    paddingLeft: spacing.lg,
+    paddingRight: spacing.sm,
+    paddingVertical: spacing.xs,
+    minHeight: 44,
+  },
+  statusDot: { width: 8, height: 8, borderRadius: 4 },
+  statusPillText: { ...typography.bodyBold, color: colors.text, marginRight: spacing.xs },
+  sheet: {
+    backgroundColor: colors.white,
+    borderTopLeftRadius: borderRadius.xl,
+    borderTopRightRadius: borderRadius.xl,
+    borderTopWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.md,
     gap: spacing.md,
+  },
+  sheetHint: { ...typography.caption, color: colors.textSecondary },
+  error: { ...typography.caption, color: colors.statusCritical },
+  statsRow: { flexDirection: 'row', gap: spacing.md },
+  statCard: {
+    flex: 1,
+    backgroundColor: colors.gray50,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.lg,
+    alignItems: 'center',
+  },
+  statValue: { ...typography.bodyBold, color: colors.text },
+  statLabel: { ...typography.small, color: colors.textMuted, marginTop: 2 },
+  setupBlock: { gap: spacing.sm, paddingBottom: spacing.sm },
+  setupTitle: { ...typography.h3, color: colors.text },
+  setupHint: { ...typography.caption, color: colors.textSecondary },
+  locationSurface: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing['2xl'],
     backgroundColor: colors.gray50,
   },
-  setupCardPressed: { backgroundColor: colors.gray100 },
-  setupText: { flex: 1, gap: 2 },
-  setupTitle: { ...typography.bodyBold, color: colors.text },
-  setupHint: { ...typography.caption, color: colors.textSecondary },
-  setupChevron: { ...typography.h3, color: colors.gray400 },
-  toggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.lg },
-  statusLabel: { ...typography.h3, color: colors.text },
-  statusHint: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
-  toggleContainer: { transform: [{ scale: 1.2 }] },
-  warning: { ...typography.caption, color: colors.warning, marginBottom: spacing.md },
-  error: { ...typography.caption, color: colors.error, marginBottom: spacing.md },
-  statsRow: { flexDirection: 'row', gap: spacing.md },
-  statCard: { flex: 1, backgroundColor: colors.gray50, borderRadius: borderRadius.md, padding: spacing.lg, alignItems: 'center' },
-  statValue: { ...typography.h3, color: colors.text },
-  statLabel: { ...typography.small, color: colors.textMuted, marginTop: 4 },
+  locationCard: {
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: colors.white,
+    borderRadius: borderRadius.xl,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing['2xl'],
+    maxWidth: 340,
+  },
+  locationTitle: { ...typography.h3, color: colors.text, textAlign: 'center' },
+  locationBody: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  primaryButton: {
+    minHeight: 48,
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: borderRadius.lg,
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing['2xl'],
+    marginTop: spacing.sm,
+  },
+  pressed: { opacity: 0.85 },
+  primaryButtonText: { ...typography.bodyBold, color: colors.white },
 });
