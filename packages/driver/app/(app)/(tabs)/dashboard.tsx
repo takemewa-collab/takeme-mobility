@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Switch } from 'react-native';
+import { View, Text, StyleSheet, Switch, Alert, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import * as Notifications from 'expo-notifications';
@@ -7,6 +7,7 @@ import { formatCurrency, API } from '@takeme/shared';
 import { TripMap } from '@/components/trip-map';
 import { registerForPush } from '@/lib/register-push';
 import { useDriverStatus } from '@/providers/driver-status';
+import { useOnboarding } from '@/providers/onboarding';
 import { useTrip } from '@/providers/trip';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
@@ -14,9 +15,19 @@ import { spacing, borderRadius } from '@/theme/spacing';
 
 export default function DashboardScreen() {
   const router = useRouter();
-  const { status, goOnline, goOffline, loading, isLocationPermitted, error, location } =
-    useDriverStatus();
+  const {
+    status,
+    goOnline,
+    goOffline,
+    loading,
+    isLocationPermitted,
+    error,
+    location,
+    activationBlock,
+    clearActivationBlock,
+  } = useDriverStatus();
   const { activeTrip, apiClient } = useTrip();
+  const { state: onboardingState } = useOnboarding();
 
   const [dashData, setDashData] = useState<{
     trips: number; hours: number; earned: number;
@@ -64,9 +75,33 @@ export default function DashboardScreen() {
     const sub = Notifications.addNotificationResponseReceivedListener((response) => {
       const data = response.notification.request.content.data as { type?: string };
       if (data?.type === 'ride_request') router.push('/(app)/trip/incoming');
+      if (data?.type === 'onboarding_update') router.push('/onboarding');
     });
     return () => sub.remove();
   }, [apiClient, router]);
+
+  // The server refuses `available` until activation completes; explain and
+  // route to the Activation Center rather than surfacing a raw 403.
+  useEffect(() => {
+    if (!activationBlock) return;
+    Alert.alert(
+      "You can't go online yet",
+      'A few activation steps still need your attention.',
+      [
+        { text: 'Not now', style: 'cancel', onPress: clearActivationBlock },
+        {
+          text: "See what's needed",
+          onPress: () => {
+            clearActivationBlock();
+            router.push('/onboarding');
+          },
+        },
+      ],
+    );
+  }, [activationBlock, clearActivationBlock, router]);
+
+  const needsSetup =
+    onboardingState != null && onboardingState.activation.decision !== 'eligible';
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -80,6 +115,20 @@ export default function DashboardScreen() {
       </View>
 
       <View style={styles.statusCard}>
+        {needsSetup && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Finish your setup"
+            onPress={() => router.push('/onboarding')}
+            style={({ pressed }) => [styles.setupCard, pressed && styles.setupCardPressed]}
+          >
+            <View style={styles.setupText}>
+              <Text style={styles.setupTitle}>Finish your setup</Text>
+              <Text style={styles.setupHint}>Complete your activation steps to go online</Text>
+            </View>
+            <Text style={styles.setupChevron}>›</Text>
+          </Pressable>
+        )}
         <View style={styles.toggleRow}>
           <View>
             <Text style={styles.statusLabel}>{isOnline ? 'Online' : 'Offline'}</Text>
@@ -145,6 +194,24 @@ const styles = StyleSheet.create({
     padding: spacing['2xl'], shadowColor: colors.black, shadowOffset: { width: 0, height: -2 },
     shadowOpacity: 0.08, shadowRadius: 12, elevation: 8,
   },
+  setupCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 56,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.lg,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing.lg,
+    gap: spacing.md,
+    backgroundColor: colors.gray50,
+  },
+  setupCardPressed: { backgroundColor: colors.gray100 },
+  setupText: { flex: 1, gap: 2 },
+  setupTitle: { ...typography.bodyBold, color: colors.text },
+  setupHint: { ...typography.caption, color: colors.textSecondary },
+  setupChevron: { ...typography.h3, color: colors.gray400 },
   toggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.lg },
   statusLabel: { ...typography.h3, color: colors.text },
   statusHint: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },

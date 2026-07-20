@@ -11,6 +11,7 @@ import { StyleSheet } from 'react-native';
 import '@/tasks/background-location';
 import { SupabaseProvider } from '@/providers/supabase';
 import { AuthProvider } from '@/providers/auth';
+import { OnboardingProvider } from '@/providers/onboarding';
 import { DriverStatusProvider } from '@/providers/driver-status';
 import { TripProvider } from '@/providers/trip';
 import { initMonitoring, withMonitoring } from '@/lib/monitoring';
@@ -27,15 +28,18 @@ function RootLayout() {
     <GestureHandlerRootView style={styles.root}>
       <SupabaseProvider>
         <AuthProvider>
-          <DriverStatusProvider>
-            <TripProvider>
-              <StatusBar style="dark" />
-              <Stack screenOptions={{ headerShown: false }}>
-                <Stack.Screen name="(auth)" />
-                <Stack.Screen name="(app)" />
-              </Stack>
-            </TripProvider>
-          </DriverStatusProvider>
+          <OnboardingProvider>
+            <DriverStatusProvider>
+              <TripProvider>
+                <StatusBar style="dark" />
+                <Stack screenOptions={{ headerShown: false }}>
+                  <Stack.Screen name="(auth)" />
+                  <Stack.Screen name="onboarding" />
+                  <Stack.Screen name="(app)" />
+                </Stack>
+              </TripProvider>
+            </DriverStatusProvider>
+          </OnboardingProvider>
         </AuthProvider>
       </SupabaseProvider>
     </GestureHandlerRootView>

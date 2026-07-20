@@ -48,6 +48,13 @@ export const colors = {
   border: '#ECECEC',
   borderFocused: '#111111',
 
+  // Activation status — the ONLY hued tokens in the app. Reserved for status
+  // text, badges, and dots; never buttons or chrome. Status is always paired
+  // with a text label, never conveyed by colour alone.
+  statusApproved: '#137A3F',
+  statusWarning: '#8A5A00',
+  statusCritical: '#B3261E',
+
   // Driver status — distinguished by tone (filled black = live, grey = idle)
   online: '#111111',
   offline: '#B0B0B0',

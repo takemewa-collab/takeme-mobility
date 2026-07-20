@@ -46,8 +46,9 @@ export default function DriverVerifyScreen() {
       ? await verifyEmailOtp(identifier, fullCode)
       : await verifyOtp(identifier, fullCode);
     if (result.success) {
-      // Check if driver has completed onboarding — Phase 4 will add this check
-      router.replace('/(app)/(tabs)/dashboard');
+      // The Activation Center is the front door after sign-in; it forwards
+      // fully-activated drivers straight to the dashboard.
+      router.replace('/onboarding');
     } else {
       setError(result.error ?? 'Invalid code');
       setCode('');

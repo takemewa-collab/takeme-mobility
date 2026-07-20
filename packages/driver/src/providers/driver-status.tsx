@@ -9,8 +9,9 @@ import React, {
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import type { DriverStatus, Coordinates } from '@takeme/shared';
-import { ApiClient, API, DRIVER_LOCATION_INTERVAL_MS } from '@takeme/shared';
+import { ApiClient, ApiError, API, DRIVER_LOCATION_INTERVAL_MS } from '@takeme/shared';
 import { getClerkToken } from '@/lib/clerk';
+import type { ActivationState } from '@/types/onboarding';
 import { useAuth } from './auth';
 
 const BACKGROUND_LOCATION_TASK = 'DRIVER_LOCATION_BROADCAST';
@@ -22,11 +23,14 @@ interface DriverStatusState {
   isBackgroundPermitted: boolean;
   loading: boolean;
   error: string | null;
+  /** Set when the server refuses `available` with a 403 activation payload. */
+  activationBlock: ActivationState | null;
 }
 
 interface DriverStatusContextValue extends DriverStatusState {
   goOnline: () => Promise<void>;
   goOffline: () => Promise<void>;
+  clearActivationBlock: () => void;
 }
 
 const DriverStatusContext = createContext<DriverStatusContextValue | null>(null);
@@ -41,6 +45,7 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
     isBackgroundPermitted: false,
     loading: false,
     error: null,
+    activationBlock: null,
   });
 
   const apiClient = useMemo(
@@ -129,7 +134,7 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
       return;
     }
 
-    setState((prev) => ({ ...prev, loading: true, error: null }));
+    setState((prev) => ({ ...prev, loading: true, error: null, activationBlock: null }));
     try {
       // Update server status
       await apiClient.put(API.DRIVER_STATUS, { status: 'available' });
@@ -151,6 +156,22 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
 
       setState((prev) => ({ ...prev, status: 'available', loading: false }));
     } catch (err) {
+      // The platform refuses `available` until the driver is activated; the
+      // 403 body carries the activation decision so the UI can route to the
+      // Activation Center instead of showing a bare error string.
+      if (err instanceof ApiError && err.status === 403) {
+        const body = err.body as { activation?: ActivationState } | null;
+        if (body?.activation) {
+          const activation = body.activation;
+          setState((prev) => ({
+            ...prev,
+            loading: false,
+            error: null,
+            activationBlock: activation,
+          }));
+          return;
+        }
+      }
       setState((prev) => ({
         ...prev,
         loading: false,
@@ -182,9 +203,13 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
     }
   }, [apiClient]);
 
+  const clearActivationBlock = useCallback(() => {
+    setState((prev) => ({ ...prev, activationBlock: null }));
+  }, []);
+
   const value = useMemo(
-    () => ({ ...state, goOnline, goOffline }),
-    [state, goOnline, goOffline],
+    () => ({ ...state, goOnline, goOffline, clearActivationBlock }),
+    [state, goOnline, goOffline, clearActivationBlock],
   );
 
   return (

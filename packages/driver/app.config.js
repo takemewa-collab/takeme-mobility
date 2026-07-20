@@ -85,6 +85,15 @@ module.exports = ({ config }) => ({
     ],
     'expo-task-manager',
     [
+      'expo-image-picker',
+      {
+        cameraPermission:
+          'TAKEME uses your camera to photograph your documents for verification.',
+        photosPermission:
+          'TAKEME uses your photo library to attach photos of your documents for verification.',
+      },
+    ],
+    [
       '@sentry/react-native/expo',
       {
         organization: 'takeme-mobility',
