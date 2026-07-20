@@ -44,6 +44,24 @@ export async function PUT(request: NextRequest) {
         phone: driver.phone,
         context: 'driver going available',
       });
+
+      // Server-authoritative activation gate: expired/suspended/incomplete
+      // requirements block going online regardless of local app state.
+      const { activationDecisionForUser } = await import('@/lib/onboarding/service');
+      const activation = await activationDecisionForUser(svc, user.id);
+      if (activation.decision !== 'eligible') {
+        return NextResponse.json(
+          {
+            error: 'You can’t go online yet. Check your Activation Center for what’s needed.',
+            activation: {
+              decision: activation.decision,
+              reasonCodes: activation.reasonCodes,
+              requiredActions: activation.requiredActions,
+            },
+          },
+          { status: 403 },
+        );
+      }
     }
 
     // Don't allow going available if currently on_trip

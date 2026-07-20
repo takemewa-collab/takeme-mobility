@@ -37,6 +37,13 @@ export const API = {
   DRIVER_PREFERENCES: '/api/driver/preferences',
   DRIVER_DASHBOARD: '/api/driver/dashboard',
   DRIVER_DOCUMENTS: '/api/driver/documents',
+  DRIVER_ONBOARDING: '/api/driver/onboarding',
+  DRIVER_ONBOARDING_VEHICLE: '/api/driver/onboarding/vehicle',
+  DRIVER_ONBOARDING_LEGAL: '/api/driver/onboarding/legal',
+  DRIVER_ONBOARDING_DOCUMENTS: '/api/driver/onboarding/documents',
+  DRIVER_ONBOARDING_BACKGROUND: '/api/driver/onboarding/background-check',
+  DRIVER_ONBOARDING_TRAINING: '/api/driver/onboarding/training',
+  DRIVER_ONBOARDING_WAITLIST: '/api/driver/onboarding/waitlist',
   DRIVER_EARNINGS_ADD: '/api/driver/earnings/add',
   DRIVER_PAYOUTS_INSTANT: '/api/driver/payouts/instant',
 
