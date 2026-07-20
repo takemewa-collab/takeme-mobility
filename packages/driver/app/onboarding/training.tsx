@@ -5,6 +5,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ApiError } from '@takeme/shared';
 import { Button } from '@/components/ui';
 import { ErrorView, LoadingView } from '@/components/onboarding';
+import { exitTask } from '@/lib/nav';
+import { useDiscardGuard } from '@/hooks/use-discard-guard';
 import { useOnboarding, onboardingErrorMessage } from '@/providers/onboarding';
 import type { TrainingResult } from '@/types/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
@@ -33,12 +35,22 @@ export default function TrainingScreen() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [result, setResult] = useState<TrainingResult | null>(null);
 
+  // Started answering but not submitted yet — confirm before losing answers.
+  // Progress itself is never recorded on leave: completion only happens via
+  // the explicit submitTraining POST.
+  useDiscardGuard(
+    Object.keys(answers).length > 0 && result === null,
+    'Your quiz answers haven’t been submitted.',
+  );
+
   if (!state) {
     if (loading) return <LoadingView />;
     return <ErrorView message={error} onRetry={() => void refresh()} />;
   }
   if (!requirement) {
-    return <ErrorView message="This step is no longer available." onRetry={() => router.back()} />;
+    return (
+      <ErrorView message="This step is no longer available." onRetry={() => exitTask(router)} />
+    );
   }
 
   const submit = async () => {
@@ -66,7 +78,7 @@ export default function TrainingScreen() {
   };
 
   const containerPadding = {
-    paddingTop: insets.top + spacing.xl,
+    paddingTop: spacing.xl,
     paddingBottom: insets.bottom + spacing['3xl'],
   } as const;
 
@@ -80,7 +92,7 @@ export default function TrainingScreen() {
               You scored {result.score} of {result.passScore} needed. This step is done.
             </Text>
             <View style={styles.actions}>
-              <Button title="Done" onPress={() => router.back()} fullWidth size="lg" />
+              <Button title="Done" onPress={() => exitTask(router)} fullWidth size="lg" />
             </View>
           </>
         ) : (
@@ -121,7 +133,12 @@ export default function TrainingScreen() {
                   fullWidth
                 />
               ) : null}
-              <Button title="Do this later" variant="ghost" onPress={() => router.back()} fullWidth />
+              <Button
+                title="Do this later"
+                variant="ghost"
+                onPress={() => exitTask(router)}
+                fullWidth
+              />
             </View>
           </>
         )}
@@ -150,7 +167,7 @@ export default function TrainingScreen() {
             onPress={() => {
               if (isLastSection) {
                 if (questions.length > 0) setMode('quiz');
-                else router.back();
+                else exitTask(router);
               } else {
                 setSectionIndex((i) => i + 1);
               }
@@ -173,7 +190,7 @@ export default function TrainingScreen() {
 
   if (questions.length === 0) {
     return (
-      <ErrorView message="This training has no quiz right now." onRetry={() => router.back()} />
+      <ErrorView message="This training has no quiz right now." onRetry={() => exitTask(router)} />
     );
   }
 

@@ -3,6 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui';
+import { exitTask } from '@/lib/nav';
 import { useOnboarding, onboardingErrorMessage } from '@/providers/onboarding';
 import type { ApplicantType, VehicleRelationship } from '@/types/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
@@ -34,7 +35,7 @@ export default function PathScreen() {
     setSubmitting(true);
     try {
       await updateApplication(choice);
-      router.replace('/onboarding');
+      exitTask(router);
     } catch (err) {
       setError(onboardingErrorMessage(err));
     } finally {
@@ -124,7 +125,7 @@ export default function PathScreen() {
       style={styles.container}
       contentContainerStyle={[
         styles.content,
-        { paddingTop: insets.top + spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
+        { paddingTop: spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
       ]}
     >
       <Text style={styles.title}>{title}</Text>

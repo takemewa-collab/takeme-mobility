@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -9,10 +9,14 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useHeaderHeight } from '@react-navigation/elements';
 import { Button, Input } from '@/components/ui';
 import { LoadingView } from '@/components/onboarding';
+import { exitTask } from '@/lib/nav';
+import { useDiscardGuard } from '@/hooks/use-discard-guard';
+import { useAuth } from '@/providers/auth';
 import { useOnboarding, onboardingErrorMessage } from '@/providers/onboarding';
 import type { WeeklyHours } from '@/types/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
@@ -24,40 +28,150 @@ const HOURS_OPTIONS: { value: WeeklyHours; label: string }[] = [
   { value: 'over_40', label: '40+' },
 ];
 
+interface FormValues {
+  fullName: string;
+  email: string;
+  phone: string;
+  licenseNumber: string;
+  weeklyHours: WeeklyHours | null;
+  airportInterest: boolean;
+  accessibleVehicle: boolean;
+  priorExperience: boolean;
+}
+
+const EMPTY_FORM: FormValues = {
+  fullName: '',
+  email: '',
+  phone: '',
+  licenseNumber: '',
+  weeklyHours: null,
+  airportInterest: false,
+  accessibleVehicle: false,
+  priorExperience: false,
+};
+
+function sameForm(a: FormValues, b: FormValues): boolean {
+  return (
+    a.fullName === b.fullName &&
+    a.email === b.email &&
+    a.phone === b.phone &&
+    a.licenseNumber === b.licenseNumber &&
+    a.weeklyHours === b.weeklyHours &&
+    a.airportInterest === b.airportInterest &&
+    a.accessibleVehicle === b.accessibleVehicle &&
+    a.priorExperience === b.priorExperience
+  );
+}
+
+type FieldKey = 'fullName' | 'email' | 'phone' | 'licenseNumber';
+type FieldErrors = Partial<Record<FieldKey, string>>;
+
+const VALIDATORS: Record<FieldKey, (value: string) => string | undefined> = {
+  fullName: (value) =>
+    value.trim().length >= 2 ? undefined : 'Enter your full legal name.',
+  email: (value) =>
+    /^\S+@\S+\.\S+$/.test(value.trim()) ? undefined : 'Enter a valid email address.',
+  phone: (value) => {
+    const digits = value.replace(/\D/g, '');
+    return digits.length >= 7 && digits.length <= 15
+      ? undefined
+      : 'Enter a valid phone number.';
+  },
+  licenseNumber: (value) => {
+    const trimmed = value.trim();
+    if (!trimmed) return "Enter your driver's license number.";
+    if (trimmed.length > 32 || !/^[A-Za-z0-9 -]+$/.test(trimmed)) {
+      return 'Letters and numbers only, up to 32 characters.';
+    }
+    return undefined;
+  },
+};
+
 export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const headerHeight = useHeaderHeight();
+  const { user: authUser } = useAuth();
   const { state, updateApplication } = useOnboarding();
-  const application = state?.application ?? null;
 
-  const [fullName, setFullName] = useState(application?.fullName ?? '');
-  const [email, setEmail] = useState(application?.email ?? '');
-  const [phone, setPhone] = useState(application?.phone ?? '');
-  const [licenseNumber, setLicenseNumber] = useState('');
-  const [weeklyHours, setWeeklyHours] = useState<WeeklyHours | null>(null);
-  const [airportInterest, setAirportInterest] = useState(false);
-  const [accessibleVehicle, setAccessibleVehicle] = useState(false);
-  const [priorExperience, setPriorExperience] = useState(false);
+  const [values, setValues] = useState<FormValues>(EMPTY_FORM);
+  const [snapshot, setSnapshot] = useState<FormValues | null>(null);
+  const [phoneLocked, setPhoneLocked] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [fieldErrors, setFieldErrors] = useState<{ fullName?: string; email?: string; phone?: string }>({});
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  const [pendingExit, setPendingExit] = useState(false);
 
-  if (!state) return <LoadingView />;
+  // Seed once per focus from whatever server state exists at that moment —
+  // never mid-edit, so a background refresh can't stomp the user's typing.
+  const seededThisFocus = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        seededThisFocus.current = false;
+      };
+    }, []),
+  );
+
+  const application = state?.application ?? null;
+  useEffect(() => {
+    if (seededThisFocus.current || !state) return;
+    seededThisFocus.current = true;
+    // Server application first; the verified sign-in identity fills any gaps.
+    const seed: FormValues = {
+      ...EMPTY_FORM,
+      fullName: application?.fullName ?? authUser?.full_name ?? '',
+      email: application?.email ?? authUser?.email ?? '',
+      phone: application?.phone ?? authUser?.phone ?? '',
+    };
+    setValues(seed);
+    setSnapshot(seed);
+    setPhoneLocked(!application?.phone && Boolean(authUser?.phone));
+    setFieldErrors({});
+    setError(null);
+  }, [state, application, authUser]);
+
+  const dirty = snapshot != null && !sameForm(values, snapshot);
+  useDiscardGuard(dirty);
+
+  // Leave only after the commit that clears `dirty` has rendered, so the
+  // discard guard never fires on a successful save.
+  useEffect(() => {
+    if (!pendingExit) return;
+    setPendingExit(false);
+    exitTask(router);
+  }, [pendingExit, router]);
+
+  const setField = <K extends keyof FormValues>(field: K, value: FormValues[K]) => {
+    setValues((prev) => ({ ...prev, [field]: value }));
+    if (field in VALIDATORS) {
+      setFieldErrors((prev) => ({ ...prev, [field]: undefined }));
+    }
+  };
+
+  const validateField = (field: FieldKey) => {
+    setFieldErrors((prev) => ({ ...prev, [field]: VALIDATORS[field](values[field]) }));
+  };
+
+  if (!state || !snapshot) return <LoadingView />;
+
+  const nameWordCount = values.fullName.trim().split(/\s+/).filter(Boolean).length;
+  const showNameHint = nameWordCount === 1 && !fieldErrors.fullName;
 
   const save = async () => {
     if (submitting) return;
-    const errs: typeof fieldErrors = {};
-    if (!fullName.trim()) errs.fullName = 'Enter your full legal name.';
-    if (!email.trim() || !/^\S+@\S+\.\S+$/.test(email.trim())) {
-      errs.email = 'Enter a valid email address.';
-    }
-    if (!phone.trim()) errs.phone = 'Enter your phone number.';
+    const errs: FieldErrors = {};
+    (Object.keys(VALIDATORS) as FieldKey[]).forEach((field) => {
+      const message = VALIDATORS[field](values[field]);
+      if (message) errs[field] = message;
+    });
     setFieldErrors(errs);
-    if (Object.keys(errs).length > 0) return;
+    if (Object.values(errs).some(Boolean)) return;
 
     setError(null);
     setSubmitting(true);
     try {
+      const { weeklyHours, airportInterest, accessibleVehicle, priorExperience } = values;
       const preferences =
         weeklyHours || airportInterest || accessibleVehicle || priorExperience
           ? {
@@ -68,13 +182,15 @@ export default function ProfileScreen() {
             }
           : undefined;
       await updateApplication({
-        fullName: fullName.trim(),
-        email: email.trim(),
-        phone: phone.trim(),
-        ...(licenseNumber.trim() ? { licenseNumber: licenseNumber.trim() } : {}),
+        fullName: values.fullName.trim(),
+        email: values.email.trim(),
+        phone: values.phone.trim(),
+        licenseNumber: values.licenseNumber.trim(),
         ...(preferences ? { preferences } : {}),
       });
-      router.back();
+      // Reset the snapshot so back navigation no longer warns.
+      setSnapshot(values);
+      setPendingExit(true);
     } catch (err) {
       setError(onboardingErrorMessage(err));
     } finally {
@@ -86,52 +202,67 @@ export default function ProfileScreen() {
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={headerHeight}
     >
       <ScrollView
-        contentContainerStyle={[
-          styles.content,
-          { paddingTop: insets.top + spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
-        ]}
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
       >
-        <Text style={styles.title}>About you</Text>
         <Text style={styles.subtitle}>
           Use your legal name as it appears on your driver&apos;s license.
         </Text>
 
         <View style={styles.fields}>
-          <Input
-            label="Full legal name"
-            value={fullName}
-            onChangeText={setFullName}
-            autoCapitalize="words"
-            autoComplete="name"
-            error={fieldErrors.fullName}
-          />
+          <View>
+            <Input
+              label="Full legal name"
+              value={values.fullName}
+              onChangeText={(text) => setField('fullName', text)}
+              onBlur={() => validateField('fullName')}
+              autoCapitalize="words"
+              autoComplete="name"
+              error={fieldErrors.fullName}
+            />
+            {showNameHint ? (
+              <Text style={styles.fieldHint}>Include your first and last name.</Text>
+            ) : null}
+          </View>
           <Input
             label="Email"
-            value={email}
-            onChangeText={setEmail}
+            value={values.email}
+            onChangeText={(text) => setField('email', text)}
+            onBlur={() => validateField('email')}
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="email-address"
             autoComplete="email"
             error={fieldErrors.email}
           />
-          <Input
-            label="Phone"
-            value={phone}
-            onChangeText={setPhone}
-            keyboardType="phone-pad"
-            autoComplete="tel"
-            error={fieldErrors.phone}
-          />
+          <View>
+            <Input
+              label="Phone"
+              value={values.phone}
+              onChangeText={(text) => setField('phone', text)}
+              onBlur={() => validateField('phone')}
+              keyboardType="phone-pad"
+              autoComplete="tel"
+              editable={!phoneLocked}
+              error={fieldErrors.phone}
+            />
+            {phoneLocked ? (
+              <Text style={styles.fieldHint}>Verified at sign-in.</Text>
+            ) : null}
+          </View>
           <Input
             label="Driver's license number"
-            value={licenseNumber}
-            onChangeText={setLicenseNumber}
+            value={values.licenseNumber}
+            onChangeText={(text) => setField('licenseNumber', text)}
+            onBlur={() => validateField('licenseNumber')}
             autoCapitalize="characters"
             autoCorrect={false}
+            maxLength={32}
+            error={fieldErrors.licenseNumber}
           />
         </View>
 
@@ -144,14 +275,14 @@ export default function ProfileScreen() {
           <Text style={styles.fieldLabel}>Hours per week</Text>
           <View style={styles.segmented} accessibilityRole="radiogroup">
             {HOURS_OPTIONS.map((option) => {
-              const selected = weeklyHours === option.value;
+              const selected = values.weeklyHours === option.value;
               return (
                 <Pressable
                   key={option.value}
                   accessibilityRole="radio"
                   accessibilityState={{ selected }}
                   accessibilityLabel={`${option.label} hours per week`}
-                  onPress={() => setWeeklyHours(selected ? null : option.value)}
+                  onPress={() => setField('weeklyHours', selected ? null : option.value)}
                   style={[styles.segment, selected && styles.segmentSelected]}
                 >
                   <Text style={[styles.segmentText, selected && styles.segmentTextSelected]}>
@@ -164,24 +295,26 @@ export default function ProfileScreen() {
 
           <ToggleRow
             label="Interested in airport trips"
-            value={airportInterest}
-            onChange={setAirportInterest}
+            value={values.airportInterest}
+            onChange={(next) => setField('airportInterest', next)}
           />
           <ToggleRow
             label="I have a wheelchair-accessible vehicle"
-            value={accessibleVehicle}
-            onChange={setAccessibleVehicle}
+            value={values.accessibleVehicle}
+            onChange={(next) => setField('accessibleVehicle', next)}
           />
           <ToggleRow
             label="I have rideshare or livery experience"
-            value={priorExperience}
-            onChange={setPriorExperience}
+            value={values.priorExperience}
+            onChange={(next) => setField('priorExperience', next)}
           />
         </View>
+      </ScrollView>
 
+      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
         {error ? <Text style={styles.error}>{error}</Text> : null}
         <Button title="Save" onPress={() => void save()} loading={submitting} fullWidth size="lg" />
-      </ScrollView>
+      </View>
     </KeyboardAvoidingView>
   );
 }
@@ -211,13 +344,13 @@ function ToggleRow({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  content: { paddingHorizontal: spacing.lg },
-  title: { ...typography.h2, color: colors.text },
-  subtitle: { ...typography.body, color: colors.textSecondary, marginTop: spacing.xs },
-  fields: { marginTop: spacing['2xl'], gap: spacing.lg },
+  scroll: { flex: 1 },
+  content: { paddingHorizontal: spacing.lg, paddingTop: spacing.xl, paddingBottom: spacing.xl },
+  subtitle: { ...typography.body, color: colors.textSecondary },
+  fields: { marginTop: spacing.xl, gap: spacing.lg },
+  fieldHint: { ...typography.small, color: colors.textMuted, marginTop: spacing.xs },
   optionalSection: {
     marginTop: spacing['2xl'],
-    marginBottom: spacing['2xl'],
     padding: spacing.xl,
     borderWidth: 1,
     borderColor: colors.border,
@@ -253,5 +386,13 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   toggleLabel: { ...typography.caption, color: colors.text, flex: 1 },
-  error: { ...typography.caption, color: colors.statusCritical, marginBottom: spacing.md },
+  footer: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    gap: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    backgroundColor: colors.background,
+  },
+  error: { ...typography.caption, color: colors.statusCritical },
 });

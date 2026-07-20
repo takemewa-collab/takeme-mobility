@@ -15,6 +15,7 @@ import * as Device from 'expo-device';
 import { ApiError } from '@takeme/shared';
 import { Button } from '@/components/ui';
 import { ErrorView, LoadingView } from '@/components/onboarding';
+import { exitTask } from '@/lib/nav';
 import { useOnboarding, onboardingErrorMessage } from '@/providers/onboarding';
 import type { LegalConsentInput, LegalDocumentContent } from '@/types/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
@@ -92,7 +93,7 @@ export default function LegalScreen() {
     return (
       <ErrorView
         message="There are no documents to review right now."
-        onRetry={() => router.back()}
+        onRetry={() => exitTask(router)}
       />
     );
   }
@@ -110,7 +111,7 @@ export default function LegalScreen() {
         osVersion: String(Platform.Version),
         model: Device.modelName ?? 'unknown',
       });
-      router.back();
+      exitTask(router);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         // A document changed while reading — refetch and re-show.
@@ -127,9 +128,11 @@ export default function LegalScreen() {
   // Everything already accepted at the current versions.
   if (pendingDocs.length === 0) {
     return (
-      <View style={[styles.container, { paddingTop: insets.top + spacing.xl }]}>
+      <View style={[styles.container, { paddingTop: spacing.xl }]}>
         <View style={styles.content}>
-          <Text style={styles.title}>Agreements</Text>
+          <Text style={styles.subtitle}>
+            You&apos;ve accepted the current version of every agreement.
+          </Text>
           <View style={styles.acceptedList}>
             {acceptedDocs.map((doc) => {
               const consent = consents.find(
@@ -147,7 +150,7 @@ export default function LegalScreen() {
           </View>
         </View>
         <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.lg }]}>
-          <Button title="Done" onPress={() => router.back()} fullWidth size="lg" />
+          <Button title="Done" onPress={() => exitTask(router)} fullWidth size="lg" />
         </View>
       </View>
     );
@@ -179,7 +182,7 @@ export default function LegalScreen() {
   };
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top + spacing.xl }]}>
+    <View style={[styles.container, { paddingTop: spacing.xl }]}>
       <View style={styles.content}>
         {versionNotice ? (
           <View style={styles.notice}>
@@ -228,7 +231,7 @@ export default function LegalScreen() {
           fullWidth
           size="lg"
         />
-        <Button title="Do this later" variant="ghost" onPress={() => router.back()} fullWidth />
+        <Button title="Do this later" variant="ghost" onPress={() => exitTask(router)} fullWidth />
       </View>
     </View>
   );
@@ -238,6 +241,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   content: { flex: 1, paddingHorizontal: spacing.lg },
   progress: { ...typography.caption, color: colors.textMuted },
+  subtitle: { ...typography.body, color: colors.textSecondary },
   title: { ...typography.h2, color: colors.text, marginTop: spacing.xs },
   meta: { ...typography.caption, color: colors.textSecondary, marginTop: spacing.xs },
   body: {

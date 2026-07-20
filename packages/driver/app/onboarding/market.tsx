@@ -10,8 +10,10 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useHeaderHeight } from '@react-navigation/elements';
 import { Input } from '@/components/ui';
 import { ErrorView, LoadingView } from '@/components/onboarding';
+import { exitTask } from '@/lib/nav';
 import { useOnboarding, onboardingErrorMessage } from '@/providers/onboarding';
 import type { OnboardingMarket } from '@/types/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
@@ -19,6 +21,7 @@ import { borderRadius, colors, spacing, typography } from '@/theme';
 export default function MarketScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const headerHeight = useHeaderHeight();
   const { markets, state, loading, error, refresh, updateApplication } = useOnboarding();
   const [query, setQuery] = useState('');
   const [submittingKey, setSubmittingKey] = useState<string | null>(null);
@@ -45,12 +48,12 @@ export default function MarketScreen() {
     setSubmittingKey(market.key);
     try {
       await updateApplication({ marketKey: market.key });
-      // A brand-new application still needs a path; an existing one goes home
-      // to see its recomputed steps.
+      // A brand-new application continues to the path chooser (pushed, so back
+      // returns here); an existing one pops home to see its recomputed steps.
       if (state?.application?.applicantType) {
-        router.replace('/onboarding');
+        exitTask(router);
       } else {
-        router.replace('/onboarding/path');
+        router.push('/onboarding/path');
       }
     } catch (err) {
       setSubmitError(onboardingErrorMessage(err));
@@ -63,8 +66,9 @@ export default function MarketScreen() {
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={headerHeight}
     >
-      <View style={[styles.header, { paddingTop: insets.top + spacing.xl }]}>
+      <View style={[styles.header, { paddingTop: spacing.xl }]}>
         <Text style={styles.title}>Where will you drive?</Text>
         <Text style={styles.subtitle}>
           Choose your market. Your activation steps depend on where you drive.

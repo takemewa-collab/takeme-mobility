@@ -1,13 +1,6 @@
+import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  Linking,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Alert, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Redirect, useFocusEffect, useRouter } from 'expo-router';
 import { decideDestination } from '@/lib/activation-route';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,6 +13,7 @@ import {
   SectionHeader,
   TaskRow,
 } from '@/components/onboarding';
+import { useAuth } from '@/providers/auth';
 import { useOnboarding } from '@/providers/onboarding';
 import { hrefForRequirement } from '@/lib/onboarding-routes';
 import type { OnboardingRequirement, RequirementStatus } from '@/types/onboarding';
@@ -68,6 +62,7 @@ export default function ActivationCenterScreen() {
     marketChangeNotice,
     dismissMarketChangeNotice,
   } = useOnboarding();
+  const { signOut, user } = useAuth();
   const [refreshing, setRefreshing] = useState(false);
   const [notifStatus, setNotifStatus] = useState<Notifications.PermissionStatus | null>(null);
 
@@ -92,6 +87,14 @@ export default function ActivationCenterScreen() {
       if (marketChangeNotice) dismissMarketChangeNotice();
     };
   }, [marketChangeNotice, dismissMarketChangeNotice]);
+
+  const onAccountMenu = useCallback(() => {
+    Alert.alert('Account', user?.phone ?? user?.email ?? undefined, [
+      { text: 'Contact support', onPress: () => void Linking.openURL('mailto:support@takememobility.com') },
+      { text: 'Sign out', style: 'destructive', onPress: () => void signOut() },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }, [signOut, user]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -191,8 +194,30 @@ export default function ActivationCenterScreen() {
         ]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} />}
       >
-        <Text style={styles.title}>Get ready to drive</Text>
-        {state.market ? <Text style={styles.marketName}>{state.market.displayName}</Text> : null}
+        <View style={styles.headerRow}>
+          <View style={styles.headerText}>
+            <Text style={styles.title}>Get ready to drive</Text>
+            {state.market ? <Text style={styles.marketName}>{state.market.displayName}</Text> : null}
+          </View>
+          <View style={styles.headerActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Help"
+              onPress={() => void Linking.openURL('mailto:support@takememobility.com')}
+              style={({ pressed }) => [styles.headerAction, pressed && styles.headerActionPressed]}
+            >
+              <Ionicons name="help-circle-outline" size={24} color={colors.text} />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Account"
+              onPress={onAccountMenu}
+              style={({ pressed }) => [styles.headerAction, pressed && styles.headerActionPressed]}
+            >
+              <Ionicons name="person-circle-outline" size={24} color={colors.text} />
+            </Pressable>
+          </View>
+        </View>
 
         <View style={styles.progressWrap}>
           <ProgressHeader fraction={progress} />
@@ -312,6 +337,17 @@ const styles = StyleSheet.create({
   },
   noticeTitle: { ...typography.bodyBold, color: colors.text },
   noticeText: { ...typography.caption, color: colors.textSecondary },
+  headerRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
+  headerText: { flex: 1 },
+  headerActions: { flexDirection: 'row', gap: spacing.xs, marginTop: 2 },
+  headerAction: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 22,
+  },
+  headerActionPressed: { backgroundColor: colors.gray100 },
   supportLink: { minHeight: 44, justifyContent: 'center' },
   supportLinkText: { ...typography.captionBold, color: colors.text },
   nextCard: {

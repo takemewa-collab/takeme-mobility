@@ -11,9 +11,12 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useHeaderHeight } from '@react-navigation/elements';
 import * as ImagePicker from 'expo-image-picker';
 import { Button, Input } from '@/components/ui';
 import { ErrorView, LoadingView, StatusBadge } from '@/components/onboarding';
+import { exitTask } from '@/lib/nav';
+import { useDiscardGuard } from '@/hooks/use-discard-guard';
 import { useOnboarding, onboardingErrorMessage, type UploadPhase } from '@/providers/onboarding';
 import type { OnboardingDocument, OnboardingRequirement } from '@/types/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
@@ -66,6 +69,7 @@ function documentForSlot(req: OnboardingRequirement, slot: Slot): OnboardingDocu
 export default function DocumentScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const headerHeight = useHeaderHeight();
   const { key } = useLocalSearchParams<{ key?: string }>();
   const { state, loading, error, refresh, uploadDocument, getDocumentUrl } = useOnboarding();
 
@@ -80,13 +84,21 @@ export default function DocumentScreen() {
   const [expiryByKind, setExpiryByKind] = useState<Record<string, string>>({});
   const [cameraBlocked, setCameraBlocked] = useState(false);
 
+  // Warn only while an upload is actually in flight. A completed upload lives
+  // on the server; a dismissed picker is a no-op — neither should nag on back.
+  const uploadInFlight = Object.values(phases).some((phase) => phase != null);
+  useDiscardGuard(uploadInFlight, 'Upload in progress — leaving now will cancel it.', {
+    stay: 'Keep waiting',
+    leave: 'Leave',
+  });
+
   if (!state) {
     if (loading) return <LoadingView />;
     return <ErrorView message={error} onRetry={() => void refresh()} />;
   }
   if (!requirement || !requirement.docKinds?.length) {
     return (
-      <ErrorView message="This step is no longer available." onRetry={() => router.back()} />
+      <ErrorView message="This step is no longer available." onRetry={() => exitTask(router)} />
     );
   }
 
@@ -183,11 +195,12 @@ export default function DocumentScreen() {
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={headerHeight}
     >
       <ScrollView
         contentContainerStyle={[
           styles.content,
-          { paddingTop: insets.top + spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
+          { paddingTop: spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
         ]}
         keyboardShouldPersistTaps="handled"
       >
@@ -255,7 +268,7 @@ export default function DocumentScreen() {
             <Text style={styles.reviewBody}>
               Your documents are submitted. We&apos;ll let you know if anything else is needed.
             </Text>
-            <Button title="Done" onPress={() => router.back()} fullWidth size="lg" />
+            <Button title="Done" onPress={() => exitTask(router)} fullWidth size="lg" />
           </View>
         ) : null}
       </ScrollView>

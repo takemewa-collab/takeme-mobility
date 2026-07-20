@@ -4,6 +4,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
 import { Button } from '@/components/ui';
+import { exitTask } from '@/lib/nav';
 import { registerForPush } from '@/lib/register-push';
 import { useOnboarding } from '@/providers/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
@@ -45,7 +46,7 @@ export default function NotificationsScreen() {
       if (res.status === 'granted') {
         // Idempotent — also runs on the dashboard once the driver is active.
         await registerForPush(apiClient);
-        router.back();
+        exitTask(router);
       }
     } finally {
       setRequesting(false);
@@ -59,7 +60,7 @@ export default function NotificationsScreen() {
       style={styles.container}
       contentContainerStyle={[
         styles.content,
-        { paddingTop: insets.top + spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
+        { paddingTop: spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
       ]}
     >
       <Text style={styles.title}>Stay in the loop</Text>
@@ -98,7 +99,7 @@ export default function NotificationsScreen() {
             size="lg"
           />
         )}
-        <Button title="Not now" variant="ghost" onPress={() => router.back()} fullWidth />
+        <Button title="Not now" variant="ghost" onPress={() => exitTask(router)} fullWidth />
       </View>
     </ScrollView>
   );

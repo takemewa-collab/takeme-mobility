@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -11,8 +11,11 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useHeaderHeight } from '@react-navigation/elements';
 import { Button, Input } from '@/components/ui';
 import { LoadingView } from '@/components/onboarding';
+import { exitTask } from '@/lib/nav';
+import { useDiscardGuard } from '@/hooks/use-discard-guard';
 import { useOnboarding, onboardingErrorMessage } from '@/providers/onboarding';
 import type { VehicleCheckResult, WaitlistVehicleSize } from '@/types/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
@@ -51,6 +54,7 @@ export default function VehicleScreen() {
 function VehicleCheckView() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const headerHeight = useHeaderHeight();
   const { state, markets, submitVehicle, updateApplication } = useOnboarding();
 
   const defaultPlateState = useMemo(() => {
@@ -77,6 +81,18 @@ function VehicleCheckView() {
 
   const vinTrimmed = vin.trim().toUpperCase();
   const vinHasIllegal = VIN_ILLEGAL.test(vinTrimmed);
+
+  // Unsaved entry worth protecting: a VIN that differs from the one on file,
+  // or any plate text. Once the server has the submission (`result`), leaving
+  // is free.
+  const initialVinRef = useRef((state?.application?.vehicle?.vin ?? '').trim().toUpperCase());
+  const vehicleDirty =
+    result == null &&
+    ((vinTrimmed !== '' && vinTrimmed !== initialVinRef.current) ||
+      plate.trim() !== '' ||
+      plateConfirm.trim() !== '');
+  useDiscardGuard(vehicleDirty);
+
   const vinError =
     vinTrimmed.length > 0 && vinTrimmed.length === VIN_LENGTH && vinHasIllegal
       ? 'VINs never contain the letters I, O, or Q.'
@@ -173,11 +189,9 @@ function VehicleCheckView() {
         style={styles.container}
         contentContainerStyle={[
           styles.content,
-          { paddingTop: insets.top + spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
+          { paddingTop: spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
         ]}
       >
-        <Text style={styles.title}>Your vehicle</Text>
-
         {result.decoded ? (
           <View style={styles.card}>
             <Text style={styles.factsTitle}>{factsLine || 'Vehicle found'}</Text>
@@ -252,7 +266,7 @@ function VehicleCheckView() {
             <>
               <Button
                 title="This is my car"
-                onPress={() => router.replace('/onboarding')}
+                onPress={() => exitTask(router)}
                 fullWidth
                 size="lg"
               />
@@ -269,7 +283,7 @@ function VehicleCheckView() {
           ) : (
             <Button
               title="Done"
-              onPress={() => router.replace('/onboarding')}
+              onPress={() => exitTask(router)}
               fullWidth
               size="lg"
             />
@@ -283,15 +297,15 @@ function VehicleCheckView() {
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={headerHeight}
     >
       <ScrollView
         contentContainerStyle={[
           styles.content,
-          { paddingTop: insets.top + spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
+          { paddingTop: spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
         ]}
         keyboardShouldPersistTaps="handled"
       >
-        <Text style={styles.title}>Your vehicle</Text>
         <Text style={styles.subtitle}>
           Start with your VIN — we can confirm most details automatically.
         </Text>
@@ -417,6 +431,7 @@ function FactRow({ label, value }: { label: string; value: string }) {
 function WaitlistView() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const headerHeight = useHeaderHeight();
   const { state, joinWaitlist, leaveWaitlist } = useOnboarding();
   const marketKey = state?.market?.key ?? '';
 
@@ -464,11 +479,12 @@ function WaitlistView() {
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={headerHeight}
     >
       <ScrollView
         contentContainerStyle={[
           styles.content,
-          { paddingTop: insets.top + spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
+          { paddingTop: spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
         ]}
         keyboardShouldPersistTaps="handled"
       >
@@ -541,7 +557,7 @@ function WaitlistView() {
             <>
               <Button
                 title="Done"
-                onPress={() => router.replace('/onboarding')}
+                onPress={() => exitTask(router)}
                 fullWidth
                 size="lg"
               />

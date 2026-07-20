@@ -89,10 +89,9 @@ export default function BackgroundCheckScreen() {
       style={styles.container}
       contentContainerStyle={[
         styles.content,
-        { paddingTop: insets.top + spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
+        { paddingTop: spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
       ]}
     >
-      <Text style={styles.title}>Background check</Text>
       <Text style={styles.subtitle}>
         A screening partner reviews your driving and criminal record. TAKEME never sees your Social
         Security number — it goes directly to the screening partner.
@@ -185,7 +184,6 @@ export default function BackgroundCheckScreen() {
             size="lg"
           />
         ) : null}
-        <Button title="Back" variant="ghost" onPress={() => router.back()} fullWidth />
       </View>
     </ScrollView>
   );
@@ -194,8 +192,7 @@ export default function BackgroundCheckScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   content: { paddingHorizontal: spacing.lg },
-  title: { ...typography.h2, color: colors.text },
-  subtitle: { ...typography.body, color: colors.textSecondary, marginTop: spacing.xs },
+  subtitle: { ...typography.body, color: colors.textSecondary },
   disclosureList: { marginTop: spacing['2xl'], gap: spacing.sm },
   disclosureRow: {
     flexDirection: 'row',
