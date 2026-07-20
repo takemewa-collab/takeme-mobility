@@ -38,13 +38,13 @@ export default function DriverVerifyScreen() {
     return () => clearTimeout(timer);
   }, [resendCooldown]);
 
-  const handleVerify = async () => {
-    if (code.length !== CODE_LENGTH || !identifier) return;
+  const verifyNow = async (fullCode: string) => {
+    if (fullCode.length !== CODE_LENGTH || !identifier) return;
     setError('');
 
     const result = isEmail
-      ? await verifyEmailOtp(identifier, code)
-      : await verifyOtp(identifier, code);
+      ? await verifyEmailOtp(identifier, fullCode)
+      : await verifyOtp(identifier, fullCode);
     if (result.success) {
       // Check if driver has completed onboarding — Phase 4 will add this check
       router.replace('/(app)/(tabs)/dashboard');
@@ -67,10 +67,6 @@ export default function DriverVerifyScreen() {
     }
   };
 
-  useEffect(() => {
-    if (code.length === CODE_LENGTH) handleVerify();
-  }, [code]);
-
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
@@ -88,8 +84,12 @@ export default function DriverVerifyScreen() {
             ref={inputRef}
             value={code}
             onChangeText={(text) => {
-              setCode(text.replace(/\D/g, '').slice(0, CODE_LENGTH));
+              const next = text.replace(/\D/g, '').slice(0, CODE_LENGTH);
+              setCode(next);
               setError('');
+              // Auto-verify the moment the last digit lands — from the event
+              // handler, not an effect, so no cascading-render hazard.
+              if (next.length === CODE_LENGTH) void verifyNow(next);
             }}
             keyboardType="number-pad"
             maxLength={CODE_LENGTH}
@@ -131,7 +131,7 @@ export default function DriverVerifyScreen() {
         <View style={styles.bottom}>
           <Button
             title="Verify"
-            onPress={handleVerify}
+            onPress={() => void verifyNow(code)}
             size="lg"
             fullWidth
             loading={loading}

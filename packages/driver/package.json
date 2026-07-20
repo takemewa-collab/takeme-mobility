@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@clerk/clerk-expo": "^2.19.31",
+    "@clerk/shared": "3.47.8",
     "@gorhom/bottom-sheet": "^5.1.1",
     "@sentry/react-native": "~7.2.0",
     "@supabase/supabase-js": "^2.100.1",

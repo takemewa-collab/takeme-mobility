@@ -14,11 +14,11 @@ export default function PendingScreen() {
         </View>
         <Text style={styles.title}>Application Submitted</Text>
         <Text style={styles.subtitle}>
-          We're reviewing your application. This usually takes 1-2 business
-          days. We'll notify you once your account is approved.
+          We’re reviewing your application. This usually takes 1-2 business
+          days. We’ll notify you once your account is approved.
         </Text>
         <Text style={styles.note}>
-          You can close the app — we'll send you a push notification when
+          You can close the app — we’ll send you a push notification when
           your application status changes.
         </Text>
       </View>
