@@ -9,16 +9,16 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { Button, Input } from '@/components/ui';
-import { LoadingView } from '@/components/onboarding';
-import { exitTask } from '@/lib/nav';
+import { LoadingView, StepProgress, SubmitSuccess } from '@/components/onboarding';
 import { useDiscardGuard } from '@/hooks/use-discard-guard';
+import { useStepFlow } from '@/hooks/use-step-flow';
 import { useAuth } from '@/providers/auth';
 import { useOnboarding, onboardingErrorMessage } from '@/providers/onboarding';
-import type { WeeklyHours } from '@/types/onboarding';
+import type { ApplicationUpdate, WeeklyHours } from '@/types/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
 
 const HOURS_OPTIONS: { value: WeeklyHours; label: string }[] = [
@@ -88,11 +88,11 @@ const VALIDATORS: Record<FieldKey, (value: string) => string | undefined> = {
 };
 
 export default function ProfileScreen() {
-  const router = useRouter();
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
   const { user: authUser } = useAuth();
   const { state, updateApplication } = useOnboarding();
+  const { stepNumber, totalSteps, goNext } = useStepFlow('profile_details');
 
   const [values, setValues] = useState<FormValues>(EMPTY_FORM);
   const [snapshot, setSnapshot] = useState<FormValues | null>(null);
@@ -100,7 +100,7 @@ export default function ProfileScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [pendingExit, setPendingExit] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   // Seed once per focus from whatever server state exists at that moment —
   // never mid-edit, so a background refresh can't stomp the user's typing.
@@ -134,13 +134,58 @@ export default function ProfileScreen() {
   const dirty = snapshot != null && !sameForm(values, snapshot);
   useDiscardGuard(dirty);
 
-  // Leave only after the commit that clears `dirty` has rendered, so the
-  // discard guard never fires on a successful save.
+  // The provider de-duplicates concurrent application mutations by sharing
+  // one in-flight promise. An explicit save must never be swallowed by a
+  // racing auto-save, so we track the auto-save promise and drain it first.
+  const autosaveInFlight = useRef<Promise<unknown> | null>(null);
+
+  // Auto-save: fields that individually pass validation are written to the
+  // server a moment after typing stops, so leaving mid-step loses nothing.
+  // Silent by design — the explicit Continue is where errors surface.
   useEffect(() => {
-    if (!pendingExit) return;
-    setPendingExit(false);
-    exitTask(router);
-  }, [pendingExit, router]);
+    if (!snapshot || submitting || saved || sameForm(values, snapshot)) return;
+    const timer = setTimeout(() => {
+      const payload: ApplicationUpdate = {};
+      const applied: Partial<FormValues> = {};
+      (Object.keys(VALIDATORS) as FieldKey[]).forEach((field) => {
+        const value = values[field];
+        if (value !== snapshot[field] && value.trim() && !VALIDATORS[field](value)) {
+          payload[field] = value.trim();
+          applied[field] = value;
+        }
+      });
+      const prefsChanged =
+        values.weeklyHours !== snapshot.weeklyHours ||
+        values.airportInterest !== snapshot.airportInterest ||
+        values.accessibleVehicle !== snapshot.accessibleVehicle ||
+        values.priorExperience !== snapshot.priorExperience;
+      if (prefsChanged) {
+        payload.preferences = {
+          ...(values.weeklyHours ? { weeklyHours: values.weeklyHours } : {}),
+          airportInterest: values.airportInterest,
+          accessibleVehicle: values.accessibleVehicle,
+          priorExperience: values.priorExperience,
+        };
+        applied.weeklyHours = values.weeklyHours;
+        applied.airportInterest = values.airportInterest;
+        applied.accessibleVehicle = values.accessibleVehicle;
+        applied.priorExperience = values.priorExperience;
+      }
+      if (Object.keys(payload).length === 0) return;
+      const request = updateApplication(payload)
+        .then(() => {
+          // Only the fields actually sent count as saved; anything typed
+          // since stays dirty and re-arms the next auto-save.
+          setSnapshot((prev) => (prev ? { ...prev, ...applied } : prev));
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (autosaveInFlight.current === request) autosaveInFlight.current = null;
+        });
+      autosaveInFlight.current = request;
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [values, snapshot, submitting, saved, updateApplication]);
 
   const setField = <K extends keyof FormValues>(field: K, value: FormValues[K]) => {
     setValues((prev) => ({ ...prev, [field]: value }));
@@ -171,6 +216,11 @@ export default function ProfileScreen() {
     setError(null);
     setSubmitting(true);
     try {
+      // Let any in-flight auto-save settle so the guarded mutation below is
+      // a fresh request carrying the full payload.
+      if (autosaveInFlight.current) {
+        await autosaveInFlight.current;
+      }
       const { weeklyHours, airportInterest, accessibleVehicle, priorExperience } = values;
       const preferences =
         weeklyHours || airportInterest || accessibleVehicle || priorExperience
@@ -190,13 +240,17 @@ export default function ProfileScreen() {
       });
       // Reset the snapshot so back navigation no longer warns.
       setSnapshot(values);
-      setPendingExit(true);
+      setSaved(true);
     } catch (err) {
       setError(onboardingErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
   };
+
+  if (saved) {
+    return <SubmitSuccess title="Details saved" onContinue={goNext} />;
+  }
 
   return (
     <KeyboardAvoidingView
@@ -209,6 +263,7 @@ export default function ProfileScreen() {
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
       >
+        <StepProgress current={stepNumber} total={totalSteps} />
         <Text style={styles.subtitle}>
           Use your legal name as it appears on your driver&apos;s license.
         </Text>
@@ -313,7 +368,7 @@ export default function ProfileScreen() {
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
         {error ? <Text style={styles.error}>{error}</Text> : null}
-        <Button title="Save" onPress={() => void save()} loading={submitting} fullWidth size="lg" />
+        <Button title="Continue" onPress={() => void save()} loading={submitting} fullWidth size="lg" />
       </View>
     </KeyboardAvoidingView>
   );

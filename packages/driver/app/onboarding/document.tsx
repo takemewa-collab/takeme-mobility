@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
   KeyboardAvoidingView,
@@ -9,14 +9,21 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useHeaderHeight } from '@react-navigation/elements';
 import * as ImagePicker from 'expo-image-picker';
 import { Button, Input } from '@/components/ui';
-import { ErrorView, LoadingView, StatusBadge } from '@/components/onboarding';
+import {
+  ErrorView,
+  LoadingView,
+  StatusBadge,
+  StepProgress,
+  SubmitSuccess,
+} from '@/components/onboarding';
 import { exitTask } from '@/lib/nav';
 import { useDiscardGuard } from '@/hooks/use-discard-guard';
+import { useStepFlow } from '@/hooks/use-step-flow';
 import { useOnboarding, onboardingErrorMessage, type UploadPhase } from '@/providers/onboarding';
 import type { OnboardingDocument, OnboardingRequirement } from '@/types/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
@@ -77,12 +84,16 @@ export default function DocumentScreen() {
     () => state?.requirements.find((r) => r.key === key) ?? null,
     [state, key],
   );
+  const { step, stepNumber, totalSteps, goNext } = useStepFlow(key);
 
   const [phases, setPhases] = useState<Record<string, UploadPhase | null>>({});
   const [slotErrors, setSlotErrors] = useState<Record<string, string | null>>({});
   const [failedCaptures, setFailedCaptures] = useState<Record<string, PendingCapture | null>>({});
   const [expiryByKind, setExpiryByKind] = useState<Record<string, string>>({});
   const [cameraBlocked, setCameraBlocked] = useState(false);
+  // Distinguishes "just finished uploading here" (confirm + auto-advance)
+  // from revisiting an already-submitted step (quiet status card).
+  const uploadedThisSession = useRef(false);
 
   // Warn only while an upload is actually in flight. A completed upload lives
   // on the server; a dismissed picker is a no-op — neither should nag on back.
@@ -137,6 +148,7 @@ export default function DocumentScreen() {
         ...(expiry ? { expiresOn: expiry } : {}),
         onPhase: (phase) => setPhases((prev) => ({ ...prev, [slot.id]: phase })),
       });
+      uploadedThisSession.current = true;
       setFailedCaptures((prev) => ({ ...prev, [slot.id]: null }));
     } catch (err) {
       setFailedCaptures((prev) => ({ ...prev, [slot.id]: capture }));
@@ -191,12 +203,28 @@ export default function DocumentScreen() {
     EXPIRING_KIND.test(kind),
   );
 
+  const headerTitle = step?.title ?? requirement.title;
+
+  if (allSubmitted && uploadedThisSession.current) {
+    return (
+      <>
+        <Stack.Screen options={{ title: headerTitle }} />
+        <SubmitSuccess
+          title="Submitted for review"
+          caption={step?.reviewEstimate ?? 'We’ll let you know if anything else is needed.'}
+          onContinue={goNext}
+        />
+      </>
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={headerHeight}
     >
+      <Stack.Screen options={{ title: headerTitle }} />
       <ScrollView
         contentContainerStyle={[
           styles.content,
@@ -204,7 +232,12 @@ export default function DocumentScreen() {
         ]}
         keyboardShouldPersistTaps="handled"
       >
-        <Text style={styles.title}>{requirement.title}</Text>
+        <StepProgress current={stepNumber} total={totalSteps} />
+        {/* Repeat the name only when this upload is one piece of a larger
+            step (e.g. a permit inside the market requirements step). */}
+        {requirement.title !== headerTitle ? (
+          <Text style={styles.title}>{requirement.title}</Text>
+        ) : null}
         {requirement.instructions ? (
           <Text style={styles.instructions}>{requirement.instructions}</Text>
         ) : requirement.summary ? (
@@ -266,7 +299,8 @@ export default function DocumentScreen() {
           <View style={styles.reviewCard}>
             <Text style={styles.reviewTitle}>In review</Text>
             <Text style={styles.reviewBody}>
-              Your documents are submitted. We&apos;ll let you know if anything else is needed.
+              Your documents are submitted.{' '}
+              {step?.reviewEstimate ?? 'We’ll let you know if anything else is needed.'}
             </Text>
             <Button title="Done" onPress={() => exitTask(router)} fullWidth size="lg" />
           </View>

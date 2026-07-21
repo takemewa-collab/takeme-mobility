@@ -5,7 +5,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
 import { ApiError } from '@takeme/shared';
 import { Button } from '@/components/ui';
-import { ErrorView, LoadingView } from '@/components/onboarding';
+import { ErrorView, LoadingView, StepProgress } from '@/components/onboarding';
+import { useStepFlow } from '@/hooks/use-step-flow';
 import { useOnboarding, onboardingErrorMessage } from '@/providers/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
 
@@ -39,6 +40,7 @@ export default function BackgroundCheckScreen() {
     () => state?.requirements.find((r) => r.category === 'background') ?? null,
     [state],
   );
+  const { stepNumber, totalSteps, goNext } = useStepFlow(requirement?.key);
 
   const disclosureKeys = useMemo(() => {
     const keys = requirement?.config.disclosure_keys;
@@ -92,9 +94,11 @@ export default function BackgroundCheckScreen() {
         { paddingTop: spacing.xl, paddingBottom: insets.bottom + spacing['3xl'] },
       ]}
     >
+      <StepProgress current={stepNumber} total={totalSteps} />
       <Text style={styles.subtitle}>
-        A screening partner reviews your driving and criminal record. TAKEME never sees your Social
-        Security number — it goes directly to the screening partner.
+        TAKEME runs a standard driving-record and background screening. Sensitive details like
+        your Social Security number are entered on a secure form and are never seen or stored by
+        TAKEME. Most checks finish within 3–5 business days.
       </Text>
 
       <View style={styles.disclosureList}>
@@ -147,10 +151,8 @@ export default function BackgroundCheckScreen() {
             ))}
           </View>
           <Text style={styles.statusBody}>
-            {backgroundCheck.provider
-              ? `Handled by ${backgroundCheck.provider}.`
-              : 'Handled by our screening partner.'}{' '}
-            We&apos;ll notify you when there is an update.
+            Most checks finish within 3–5 business days. We&apos;ll notify you the moment there is
+            an update — there&apos;s nothing else you need to do here.
           </Text>
         </View>
       ) : null}
@@ -159,8 +161,8 @@ export default function BackgroundCheckScreen() {
         <View style={styles.statusCard}>
           <Text style={styles.statusTitle}>Screening is briefly unavailable</Text>
           <Text style={styles.statusBody}>
-            Our screening partner could not be reached. Your authorization is saved — try again in
-            a little while.
+            We couldn&apos;t start your screening just now. Your authorization is saved — try
+            again in a little while.
           </Text>
         </View>
       ) : null}
@@ -170,7 +172,7 @@ export default function BackgroundCheckScreen() {
       <View style={styles.actions}>
         {activeInvitationUrl ? (
           <Button
-            title="Continue with our screening partner"
+            title="Finish your screening"
             onPress={() => void WebBrowser.openBrowserAsync(activeInvitationUrl)}
             fullWidth
             size="lg"
@@ -183,7 +185,9 @@ export default function BackgroundCheckScreen() {
             fullWidth
             size="lg"
           />
-        ) : null}
+        ) : (
+          <Button title="Continue" onPress={goNext} fullWidth size="lg" />
+        )}
       </View>
     </ScrollView>
   );

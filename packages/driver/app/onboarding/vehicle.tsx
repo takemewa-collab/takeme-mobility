@@ -9,13 +9,12 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { Button, Input } from '@/components/ui';
-import { LoadingView } from '@/components/onboarding';
-import { exitTask } from '@/lib/nav';
+import { LoadingView, StepProgress } from '@/components/onboarding';
 import { useDiscardGuard } from '@/hooks/use-discard-guard';
+import { useStepFlow } from '@/hooks/use-step-flow';
 import { useOnboarding, onboardingErrorMessage } from '@/providers/onboarding';
 import type { VehicleCheckResult, WaitlistVehicleSize } from '@/types/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
@@ -52,10 +51,10 @@ export default function VehicleScreen() {
 // ---------------------------------------------------------------------------
 
 function VehicleCheckView() {
-  const router = useRouter();
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
   const { state, markets, submitVehicle, updateApplication } = useOnboarding();
+  const { stepNumber, totalSteps, goNext } = useStepFlow('vehicle_details');
 
   const defaultPlateState = useMemo(() => {
     const region = markets.find((m) => m.key === state?.market?.key)?.regionCode ?? '';
@@ -265,8 +264,8 @@ function VehicleCheckView() {
           ) : result.decoded ? (
             <>
               <Button
-                title="This is my car"
-                onPress={() => exitTask(router)}
+                title="This is my car — continue"
+                onPress={goNext}
                 fullWidth
                 size="lg"
               />
@@ -282,8 +281,8 @@ function VehicleCheckView() {
             </>
           ) : (
             <Button
-              title="Done"
-              onPress={() => exitTask(router)}
+              title="Continue"
+              onPress={goNext}
               fullWidth
               size="lg"
             />
@@ -306,6 +305,7 @@ function VehicleCheckView() {
         ]}
         keyboardShouldPersistTaps="handled"
       >
+        <StepProgress current={stepNumber} total={totalSteps} />
         <Text style={styles.subtitle}>
           Start with your VIN — we can confirm most details automatically.
         </Text>
@@ -429,10 +429,10 @@ function FactRow({ label, value }: { label: string; value: string }) {
 // ---------------------------------------------------------------------------
 
 function WaitlistView() {
-  const router = useRouter();
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
   const { state, joinWaitlist, leaveWaitlist } = useOnboarding();
+  const { stepNumber, totalSteps, goNext } = useStepFlow('rental_assignment');
   const marketKey = state?.market?.key ?? '';
 
   const [vehicleSize, setVehicleSize] = useState<WaitlistVehicleSize>('standard');
@@ -488,6 +488,7 @@ function WaitlistView() {
         ]}
         keyboardShouldPersistTaps="handled"
       >
+        <StepProgress current={stepNumber} total={totalSteps} />
         <Text style={styles.title}>TAKEME rental</Text>
         <Text style={styles.subtitle}>
           Join the list for a TAKEME rental EV in {state?.market?.displayName ?? 'your market'}.
@@ -556,8 +557,8 @@ function WaitlistView() {
           {joined ? (
             <>
               <Button
-                title="Done"
-                onPress={() => exitTask(router)}
+                title="Continue"
+                onPress={goNext}
                 fullWidth
                 size="lg"
               />

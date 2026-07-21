@@ -48,12 +48,14 @@ export default function OnboardingLayout() {
       <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="market" options={{ title: 'Your market' }} />
       <Stack.Screen name="path" options={{ title: 'How you’ll drive' }} />
-      <Stack.Screen name="profile" options={{ title: 'About you' }} />
+      <Stack.Screen name="profile" options={{ title: 'Personal information' }} />
       <Stack.Screen name="legal" options={{ title: 'Agreements' }} />
-      <Stack.Screen name="vehicle" options={{ title: 'Your vehicle' }} />
-      <Stack.Screen name="document" options={{ title: 'Documents' }} />
+      <Stack.Screen name="vehicle" options={{ title: 'Vehicle information' }} />
+      {/* The document screen titles itself after the step it serves. */}
+      <Stack.Screen name="document" options={{ title: '' }} />
       <Stack.Screen name="background" options={{ title: 'Background check' }} />
-      <Stack.Screen name="training" options={{ title: 'Training' }} />
+      <Stack.Screen name="training" options={{ title: 'Safety training' }} />
+      <Stack.Screen name="review" options={{ title: 'Final review' }} />
       <Stack.Screen name="notifications" options={{ title: 'Notifications' }} />
     </Stack>
   );

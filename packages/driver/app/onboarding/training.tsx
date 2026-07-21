@@ -4,9 +4,10 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ApiError } from '@takeme/shared';
 import { Button } from '@/components/ui';
-import { ErrorView, LoadingView } from '@/components/onboarding';
+import { ErrorView, LoadingView, StepProgress } from '@/components/onboarding';
 import { exitTask } from '@/lib/nav';
 import { useDiscardGuard } from '@/hooks/use-discard-guard';
+import { useStepFlow } from '@/hooks/use-step-flow';
 import { useOnboarding, onboardingErrorMessage } from '@/providers/onboarding';
 import type { TrainingResult } from '@/types/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
@@ -23,6 +24,7 @@ export default function TrainingScreen() {
     () => state?.requirements.find((r) => r.key === key) ?? null,
     [state, key],
   );
+  const { stepNumber, totalSteps, goNext } = useStepFlow(key);
 
   const sections = useMemo(() => requirement?.config.sections ?? [], [requirement]);
   const questions = useMemo(() => requirement?.config.questions ?? [], [requirement]);
@@ -92,7 +94,7 @@ export default function TrainingScreen() {
               You scored {result.score} of {result.passScore} needed. This step is done.
             </Text>
             <View style={styles.actions}>
-              <Button title="Done" onPress={() => exitTask(router)} fullWidth size="lg" />
+              <Button title="Continue" onPress={goNext} fullWidth size="lg" />
             </View>
           </>
         ) : (
@@ -152,6 +154,7 @@ export default function TrainingScreen() {
     return (
       <View style={[styles.container, containerPadding, styles.pager]}>
         <ScrollView style={styles.sectionScroll} contentContainerStyle={styles.sectionContent}>
+          <StepProgress current={stepNumber} total={totalSteps} />
           <Text style={styles.progressLabel}>{requirement.title}</Text>
           <Text style={styles.title}>{section.title}</Text>
           <Text style={styles.sectionBody}>{section.body}</Text>

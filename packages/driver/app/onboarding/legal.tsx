@@ -14,8 +14,9 @@ import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import { ApiError } from '@takeme/shared';
 import { Button } from '@/components/ui';
-import { ErrorView, LoadingView } from '@/components/onboarding';
+import { ErrorView, LoadingView, StepProgress, SubmitSuccess } from '@/components/onboarding';
 import { exitTask } from '@/lib/nav';
+import { useStepFlow } from '@/hooks/use-step-flow';
 import { useOnboarding, onboardingErrorMessage } from '@/providers/onboarding';
 import type { LegalConsentInput, LegalDocumentContent } from '@/types/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
@@ -44,6 +45,22 @@ export default function LegalScreen() {
 
   const locale = state?.application?.preferredLanguage ?? 'en';
 
+  // Which server requirement these documents belong to. Agreements arrive via
+  // legal_keys; the background step pushes its disclosure_keys here — that
+  // flow returns to the background screen instead of advancing the steps.
+  const owningRequirement = useMemo(() => {
+    if (!state) return null;
+    const joined = keys.join(',');
+    return (
+      state.requirements.find((r) => (r.config.legal_keys ?? []).join(',') === joined) ??
+      state.requirements.find((r) => (r.config.disclosure_keys ?? []).join(',') === joined) ??
+      null
+    );
+  }, [state, keys]);
+  const isDisclosureFlow = owningRequirement?.category === 'background';
+  const { stepNumber, totalSteps, goNext } = useStepFlow(owningRequirement?.key);
+
+  const [accepted, setAccepted] = useState(false);
   const [documents, setDocuments] = useState<LegalDocumentContent[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [pageIndex, setPageIndex] = useState(0);
@@ -89,6 +106,10 @@ export default function LegalScreen() {
     [documents, isAccepted],
   );
 
+  if (accepted) {
+    return <SubmitSuccess title="Agreements accepted" onContinue={goNext} />;
+  }
+
   if (keys.length === 0) {
     return (
       <ErrorView
@@ -111,7 +132,12 @@ export default function LegalScreen() {
         osVersion: String(Platform.Version),
         model: Device.modelName ?? 'unknown',
       });
-      exitTask(router);
+      if (isDisclosureFlow) {
+        // Back to the background-check screen to authorize.
+        exitTask(router);
+      } else {
+        setAccepted(true);
+      }
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         // A document changed while reading — refetch and re-show.
@@ -184,6 +210,7 @@ export default function LegalScreen() {
   return (
     <View style={[styles.container, { paddingTop: spacing.xl }]}>
       <View style={styles.content}>
+        {!isDisclosureFlow ? <StepProgress current={stepNumber} total={totalSteps} /> : null}
         {versionNotice ? (
           <View style={styles.notice}>
             <Text style={styles.noticeText}>

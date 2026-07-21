@@ -1,57 +1,50 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Alert,
+  LayoutAnimation,
+  Linking,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  UIManager,
+  View,
+} from 'react-native';
 import { Redirect, useFocusEffect, useRouter } from 'expo-router';
-import { decideDestination } from '@/lib/activation-route';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
+import { decideDestination } from '@/lib/activation-route';
+import {
+  deriveApplicationSteps,
+  combineStatuses,
+  type ApplicationStep,
+} from '@/lib/application-steps';
+import { hrefForRequirement } from '@/lib/onboarding-routes';
 import { Button } from '@/components/ui';
 import {
   ErrorView,
   LoadingView,
   ProgressHeader,
-  SectionHeader,
-  TaskRow,
+  StepListRow,
 } from '@/components/onboarding';
 import { useAuth } from '@/providers/auth';
 import { useOnboarding } from '@/providers/onboarding';
-import { hrefForRequirement } from '@/lib/onboarding-routes';
-import type { OnboardingRequirement, RequirementStatus } from '@/types/onboarding';
+import type { OnboardingRequirement } from '@/types/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
 
-const ACTION_STATUSES: RequirementStatus[] = [
-  'not_started',
-  'in_progress',
-  'needs_action',
-  'rejected',
-  'expired',
-  'expiring_soon',
-];
-const REVIEW_STATUSES: RequirementStatus[] = ['submitted', 'under_review'];
-const DONE_STATUSES: RequirementStatus[] = ['approved', 'waived'];
-
-function formatDate(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-function detailFor(req: OnboardingRequirement): { text: string; color: string } | null {
-  if (req.status === 'rejected' || req.status === 'needs_action') {
-    const reason = req.rejectionReason ?? req.reviewNote;
-    if (reason) return { text: reason, color: colors.statusCritical };
-    return null;
-  }
-  if (req.status === 'expiring_soon' && req.expiresAt) {
-    return { text: `Renew by ${formatDate(req.expiresAt)}`, color: colors.statusWarning };
-  }
-  if (req.status === 'expired') {
-    return { text: 'This has expired and needs to be renewed.', color: colors.statusCritical };
-  }
-  return null;
-}
-
-export default function ActivationCenterScreen() {
+/**
+ * The application dashboard. One prominent next step, a quiet progress line,
+ * and the full checklist tucked behind "View all steps" — a first-time driver
+ * should never have to decide what to do next.
+ */
+export default function ApplicationDashboardScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const {
@@ -64,6 +57,7 @@ export default function ActivationCenterScreen() {
   } = useOnboarding();
   const { signOut, user } = useAuth();
   const [refreshing, setRefreshing] = useState(false);
+  const [stepsExpanded, setStepsExpanded] = useState(false);
   const [notifStatus, setNotifStatus] = useState<Notifications.PermissionStatus | null>(null);
 
   useFocusEffect(
@@ -102,46 +96,10 @@ export default function ActivationCenterScreen() {
     setRefreshing(false);
   }, [refresh]);
 
-  const requirements = useMemo(
-    () =>
-      (state?.requirements ?? [])
-        .filter((r) => r.status !== 'not_applicable')
-        .sort((a, b) => a.sortOrder - b.sortOrder),
-    [state],
-  );
-
-  const sections = useMemo(() => {
-    const optional = requirements.filter(
-      (r) => (!r.required || r.category === 'opportunity') && !DONE_STATUSES.includes(r.status),
-    );
-    const optionalKeys = new Set(optional.map((r) => r.key));
-    const core = requirements.filter((r) => !optionalKeys.has(r.key));
-    return {
-      action: core.filter(
-        (r) => ACTION_STATUSES.includes(r.status) || r.status === 'blocked',
-      ),
-      inReview: core.filter((r) => REVIEW_STATUSES.includes(r.status)),
-      optional,
-      completed: core.filter((r) => DONE_STATUSES.includes(r.status)),
-    };
-  }, [requirements]);
-
-  const progress = useMemo(() => {
-    const blocking = (state?.requirements ?? []).filter((r) => r.blocking);
-    if (blocking.length === 0) return 0;
-    const satisfied = blocking.filter((r) =>
-      ['approved', 'waived', 'not_applicable'].includes(r.status),
-    );
-    return satisfied.length / blocking.length;
-  }, [state]);
-
-  const nextRequirement = useMemo(() => {
-    if (!state?.activation.nextAction) return null;
-    return requirements.find((r) => r.key === state.activation.nextAction) ?? null;
-  }, [state, requirements]);
+  const derived = useMemo(() => (state ? deriveApplicationSteps(state) : null), [state]);
 
   if (!state) {
-    if (loading) return <LoadingView label="Loading your activation steps…" />;
+    if (loading) return <LoadingView label="Loading your application…" />;
     return <ErrorView message={error} onRetry={() => void refresh()} />;
   }
 
@@ -156,8 +114,22 @@ export default function ActivationCenterScreen() {
   const applicationRejected = state.application.status === 'rejected';
   const suspended =
     state.activation.decision === 'suspended' || state.application.status === 'suspended';
+  const halted = applicationRejected || suspended;
 
-  const openRequirement = (req: OnboardingRequirement) => {
+  const steps = derived?.steps ?? [];
+  const nextStep = derived?.nextStep ?? null;
+  const completedCount = derived?.completedCount ?? 0;
+  const totalCount = derived?.totalCount ?? 0;
+
+  const openStep = (step: ApplicationStep) => {
+    if (step.blocked) {
+      Alert.alert(step.title, 'This step unlocks once the steps before it are complete.');
+      return;
+    }
+    if (step.href) router.push(step.href);
+  };
+
+  const openOptional = (req: OnboardingRequirement) => {
     const href = hrefForRequirement(req);
     if (href) {
       router.push(href);
@@ -166,24 +138,10 @@ export default function ActivationCenterScreen() {
     }
   };
 
-  const renderRows = (items: OnboardingRequirement[]) =>
-    items.map((req) => {
-      const blocked = req.status === 'blocked';
-      const detail = detailFor(req);
-      return (
-        <TaskRow
-          key={req.key}
-          title={req.title}
-          summary={req.summary}
-          status={req.status}
-          detail={detail?.text}
-          detailColor={detail?.color}
-          disabled={blocked}
-          disabledHint={blocked ? 'Complete previous steps first' : undefined}
-          onPress={() => openRequirement(req)}
-        />
-      );
-    });
+  const toggleSteps = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setStepsExpanded((v) => !v);
+  };
 
   return (
     <View style={styles.container}>
@@ -196,7 +154,7 @@ export default function ActivationCenterScreen() {
       >
         <View style={styles.headerRow}>
           <View style={styles.headerText}>
-            <Text style={styles.title}>Get ready to drive</Text>
+            <Text style={styles.title}>Your application</Text>
             {state.market ? <Text style={styles.marketName}>{state.market.displayName}</Text> : null}
           </View>
           <View style={styles.headerActions}>
@@ -219,15 +177,18 @@ export default function ActivationCenterScreen() {
           </View>
         </View>
 
-        <View style={styles.progressWrap}>
-          <ProgressHeader fraction={progress} />
-        </View>
+        {totalCount > 0 ? (
+          <View style={styles.progressBlock}>
+            <Text style={styles.progressText}>
+              {completedCount} of {totalCount} steps completed
+            </Text>
+            <ProgressHeader fraction={totalCount > 0 ? completedCount / totalCount : 0} />
+          </View>
+        ) : null}
 
         {marketChangeNotice ? (
           <View style={styles.noticeCard}>
-            <Text style={styles.noticeText}>
-              Your steps were updated for {marketChangeNotice}.
-            </Text>
+            <Text style={styles.noticeText}>Your steps were updated for {marketChangeNotice}.</Text>
           </View>
         ) : null}
 
@@ -261,59 +222,125 @@ export default function ActivationCenterScreen() {
               <Text style={styles.supportLinkText}>Contact support</Text>
             </Pressable>
           </View>
-        ) : nextRequirement ? (
+        ) : nextStep ? (
           <View style={styles.nextCard}>
-            <Text style={styles.nextLabel}>Next step</Text>
-            <Text style={styles.nextTitle}>{nextRequirement.title}</Text>
-            {nextRequirement.summary ? (
-              <Text style={styles.nextSummary}>{nextRequirement.summary}</Text>
-            ) : null}
+            <Text
+              style={[
+                styles.nextLabel,
+                nextStep.status === 'action_needed' && styles.nextLabelCritical,
+              ]}
+            >
+              {nextStep.status === 'action_needed' ? 'Action needed' : 'Next step'}
+            </Text>
+            <Text style={styles.nextTitle}>{nextStep.title}</Text>
+            <Text style={styles.nextSummary}>
+              {nextStep.status === 'action_needed' && nextStep.detail
+                ? nextStep.detail
+                : nextStep.explanation}
+            </Text>
+            <View style={styles.nextMeta}>
+              <Ionicons name="time-outline" size={14} color={colors.textMuted} />
+              <Text style={styles.nextMetaText}>{nextStep.estimatedTime}</Text>
+            </View>
             <Button
-              title="Continue"
-              onPress={() => openRequirement(nextRequirement)}
+              title={nextStep.status === 'action_needed' ? 'Fix this step' : 'Continue'}
+              onPress={() => openStep(nextStep)}
               fullWidth
+              size="lg"
               style={styles.nextButton}
             />
           </View>
-        ) : null}
-
-        {!applicationRejected && notifStatus === 'undetermined' ? (
-          <View style={styles.notifWrap}>
-            <TaskRow
-              title="Turn on notifications"
-              summary="Get updates about your application and ride requests."
-              status="not_started"
-              onPress={() => router.push('/onboarding/notifications')}
+        ) : (
+          <View style={styles.nextCard}>
+            <Text style={styles.nextLabel}>In review</Text>
+            <Text style={styles.nextTitle}>Nothing to do right now</Text>
+            <Text style={styles.nextSummary}>
+              We&apos;re reviewing your submissions and will notify you the moment anything needs
+              your attention.
+            </Text>
+            <Button
+              title="View application status"
+              onPress={() => router.push('/onboarding/review')}
+              fullWidth
+              size="lg"
+              style={styles.nextButton}
             />
           </View>
+        )}
+
+        {!halted && notifStatus === 'undetermined' ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Turn on notifications"
+            onPress={() => router.push('/onboarding/notifications')}
+            style={({ pressed }) => [styles.notifRow, pressed && styles.notifRowPressed]}
+          >
+            <Ionicons name="notifications-outline" size={18} color={colors.text} />
+            <View style={styles.notifText}>
+              <Text style={styles.notifTitle}>Turn on notifications</Text>
+              <Text style={styles.notifBody}>Hear right away when a step is approved.</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={colors.gray400} />
+          </Pressable>
         ) : null}
 
-        {sections.action.length > 0 ? (
-          <>
-            <SectionHeader title="Action required" />
-            <View style={styles.list}>{renderRows(sections.action)}</View>
-          </>
-        ) : null}
+        {steps.length > 0 ? (
+          <View style={styles.allSteps}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={stepsExpanded ? 'Hide all steps' : 'View all steps'}
+              accessibilityState={{ expanded: stepsExpanded }}
+              onPress={toggleSteps}
+              style={({ pressed }) => [styles.allStepsHeader, pressed && styles.notifRowPressed]}
+            >
+              <Text style={styles.allStepsTitle}>
+                {stepsExpanded ? 'Hide all steps' : 'View all steps'}
+              </Text>
+              <Ionicons
+                name={stepsExpanded ? 'chevron-up' : 'chevron-down'}
+                size={18}
+                color={colors.textSecondary}
+              />
+            </Pressable>
 
-        {sections.inReview.length > 0 ? (
-          <>
-            <SectionHeader title="In review" />
-            <View style={styles.list}>{renderRows(sections.inReview)}</View>
-          </>
-        ) : null}
+            {stepsExpanded ? (
+              <View style={styles.stepList}>
+                {steps.map((step, index) => (
+                  <StepListRow
+                    key={`${step.key}-${index}`}
+                    title={step.title}
+                    status={step.status}
+                    detail={step.detail}
+                    reviewEstimate={step.reviewEstimate}
+                    connector
+                    onPress={() => openStep(step)}
+                  />
+                ))}
+                {derived ? (
+                  <StepListRow
+                    title={derived.reviewStep.title}
+                    status={derived.reviewStep.status}
+                    onPress={() => router.push('/onboarding/review')}
+                  />
+                ) : null}
 
-        {sections.optional.length > 0 ? (
-          <>
-            <SectionHeader title="Optional" />
-            <View style={styles.list}>{renderRows(sections.optional)}</View>
-          </>
-        ) : null}
-
-        {sections.completed.length > 0 ? (
-          <>
-            <SectionHeader title="Completed" />
-            <View style={styles.list}>{renderRows(sections.completed)}</View>
-          </>
+                {derived && derived.optional.length > 0 ? (
+                  <View style={styles.optionalBlock}>
+                    <Text style={styles.optionalHeader}>Optional</Text>
+                    {derived.optional.map((req, index) => (
+                      <StepListRow
+                        key={req.key}
+                        title={req.title}
+                        status={combineStatuses([req.status])}
+                        connector={index < derived.optional.length - 1}
+                        onPress={() => openOptional(req)}
+                      />
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
         ) : null}
       </ScrollView>
     </View>
@@ -323,22 +350,10 @@ export default function ActivationCenterScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   content: { paddingHorizontal: spacing.lg },
-  title: { ...typography.h2, color: colors.text },
-  marketName: { ...typography.body, color: colors.textSecondary, marginTop: spacing.xs },
-  progressWrap: { marginTop: spacing.lg },
-  noticeCard: {
-    marginTop: spacing.xl,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: borderRadius.lg,
-    padding: spacing.xl,
-    backgroundColor: colors.gray50,
-    gap: spacing.sm,
-  },
-  noticeTitle: { ...typography.bodyBold, color: colors.text },
-  noticeText: { ...typography.caption, color: colors.textSecondary },
   headerRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
   headerText: { flex: 1 },
+  title: { ...typography.h1, color: colors.text },
+  marketName: { ...typography.body, color: colors.textSecondary, marginTop: spacing.xs },
   headerActions: { flexDirection: 'row', gap: spacing.xs, marginTop: 2 },
   headerAction: {
     width: 44,
@@ -348,13 +363,26 @@ const styles = StyleSheet.create({
     borderRadius: 22,
   },
   headerActionPressed: { backgroundColor: colors.gray100 },
+  progressBlock: { marginTop: spacing['2xl'], gap: spacing.sm },
+  progressText: { ...typography.captionBold, color: colors.text },
+  noticeCard: {
+    marginTop: spacing.xl,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.xl,
+    padding: spacing.xl,
+    backgroundColor: colors.gray50,
+    gap: spacing.sm,
+  },
+  noticeTitle: { ...typography.bodyBold, color: colors.text },
+  noticeText: { ...typography.caption, color: colors.textSecondary },
   supportLink: { minHeight: 44, justifyContent: 'center' },
   supportLinkText: { ...typography.captionBold, color: colors.text },
   nextCard: {
     marginTop: spacing.xl,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: borderRadius.lg,
+    borderRadius: borderRadius.xl,
     padding: spacing.xl,
     backgroundColor: colors.white,
     gap: spacing.xs,
@@ -367,9 +395,51 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
   },
-  nextTitle: { ...typography.h3, color: colors.text },
+  nextLabelCritical: { color: colors.statusCritical },
+  nextTitle: { ...typography.h3, color: colors.text, marginTop: spacing.xs },
   nextSummary: { ...typography.caption, color: colors.textSecondary },
-  nextButton: { marginTop: spacing.md },
-  notifWrap: { marginTop: spacing.xl },
-  list: { gap: spacing.sm },
+  nextMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginTop: spacing.sm,
+  },
+  nextMetaText: { ...typography.caption, color: colors.textMuted },
+  nextButton: { marginTop: spacing.lg },
+  notifRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginTop: spacing.lg,
+    minHeight: 56,
+    paddingHorizontal: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.lg,
+    backgroundColor: colors.white,
+  },
+  notifRowPressed: { backgroundColor: colors.gray50 },
+  notifText: { flex: 1, gap: 1 },
+  notifTitle: { ...typography.captionBold, color: colors.text },
+  notifBody: { ...typography.small, color: colors.textSecondary },
+  allSteps: { marginTop: spacing['2xl'] },
+  allStepsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 48,
+    paddingHorizontal: spacing.xs,
+  },
+  allStepsTitle: { ...typography.bodyBold, color: colors.text },
+  stepList: { marginTop: spacing.lg, paddingHorizontal: spacing.xs },
+  optionalBlock: { marginTop: spacing.md },
+  optionalHeader: {
+    ...typography.captionBold,
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    fontSize: 12,
+    lineHeight: 16,
+    marginBottom: spacing.lg,
+  },
 });
