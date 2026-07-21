@@ -49,6 +49,7 @@ export default function OnboardingLayout() {
       <Stack.Screen name="market" options={{ title: 'Your market' }} />
       <Stack.Screen name="path" options={{ title: 'How you’ll drive' }} />
       <Stack.Screen name="profile" options={{ title: 'Personal information' }} />
+      <Stack.Screen name="verify-phone" options={{ title: 'Phone number' }} />
       <Stack.Screen name="legal" options={{ title: 'Agreements' }} />
       <Stack.Screen name="vehicle" options={{ title: 'Vehicle information' }} />
       {/* The document screen titles itself after the step it serves. */}

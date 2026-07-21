@@ -3,6 +3,9 @@
  * the wire format is always E.164 built from the raw digits.
  */
 
+// Relative import on purpose: root vitest resolves relative paths, not `@/`.
+import { DIAL_CODES } from './dial-codes';
+
 /**
  * North American numbers read as (206) 555-0134 while the driver types.
  * Everywhere else, digits group in threes — scannable without pretending to
@@ -29,6 +32,25 @@ export function formattedMaxLength(dial: string, maxDigits: number): number {
 /** Builds the E.164 string Clerk expects. */
 export function toE164(dial: string, digits: string): string {
   return `+${dial}${digits}`;
+}
+
+// Longest dial codes first so "+52…" matches Mexico before "+5…" could.
+const KNOWN_DIALS = [...new Set(DIAL_CODES.map((c) => c.dial))].sort(
+  (a, b) => b.length - a.length,
+);
+
+/**
+ * Full display form of a stored E.164 number: "+14155550111" →
+ * "+1 (415) 555-0111". Unknown dial codes fall back to three-digit grouping;
+ * anything unparseable renders unchanged rather than wrong.
+ */
+export function formatE164Display(e164: string): string {
+  const digits = e164.replace(/\D/g, '');
+  if (!digits) return e164;
+  const dial = KNOWN_DIALS.find((d) => digits.startsWith(d));
+  if (!dial || digits.length <= dial.length) return `+${digits}`;
+  const national = digits.slice(dial.length);
+  return `+${dial} ${formatNationalNumber(national, dial)}`;
 }
 
 /**

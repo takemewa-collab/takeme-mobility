@@ -9,13 +9,15 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { Button, Input } from '@/components/ui';
 import { LoadingView, StepProgress, SubmitSuccess } from '@/components/onboarding';
 import { useDiscardGuard } from '@/hooks/use-discard-guard';
 import { useStepFlow } from '@/hooks/use-step-flow';
+import { formatE164Display } from '@/lib/phone-format';
 import { useAuth } from '@/providers/auth';
 import { useOnboarding, onboardingErrorMessage } from '@/providers/onboarding';
 import type { ApplicationUpdate, WeeklyHours } from '@/types/onboarding';
@@ -28,10 +30,15 @@ const HOURS_OPTIONS: { value: WeeklyHours; label: string }[] = [
   { value: 'over_40', label: '40+' },
 ];
 
+/**
+ * Phone is deliberately absent: it is authenticated identity data. The
+ * verified number from Clerk (the one the driver signs in with) is displayed
+ * read-only and synchronized to the application automatically — changing it
+ * always goes through a fresh OTP verification, never a form field.
+ */
 interface FormValues {
   fullName: string;
   email: string;
-  phone: string;
   licenseNumber: string;
   weeklyHours: WeeklyHours | null;
   airportInterest: boolean;
@@ -42,7 +49,6 @@ interface FormValues {
 const EMPTY_FORM: FormValues = {
   fullName: '',
   email: '',
-  phone: '',
   licenseNumber: '',
   weeklyHours: null,
   airportInterest: false,
@@ -54,7 +60,6 @@ function sameForm(a: FormValues, b: FormValues): boolean {
   return (
     a.fullName === b.fullName &&
     a.email === b.email &&
-    a.phone === b.phone &&
     a.licenseNumber === b.licenseNumber &&
     a.weeklyHours === b.weeklyHours &&
     a.airportInterest === b.airportInterest &&
@@ -63,7 +68,7 @@ function sameForm(a: FormValues, b: FormValues): boolean {
   );
 }
 
-type FieldKey = 'fullName' | 'email' | 'phone' | 'licenseNumber';
+type FieldKey = 'fullName' | 'email' | 'licenseNumber';
 type FieldErrors = Partial<Record<FieldKey, string>>;
 
 const VALIDATORS: Record<FieldKey, (value: string) => string | undefined> = {
@@ -71,12 +76,6 @@ const VALIDATORS: Record<FieldKey, (value: string) => string | undefined> = {
     value.trim().length >= 2 ? undefined : 'Enter your full legal name.',
   email: (value) =>
     /^\S+@\S+\.\S+$/.test(value.trim()) ? undefined : 'Enter a valid email address.',
-  phone: (value) => {
-    const digits = value.replace(/\D/g, '');
-    return digits.length >= 7 && digits.length <= 15
-      ? undefined
-      : 'Enter a valid phone number.';
-  },
   licenseNumber: (value) => {
     const trimmed = value.trim();
     if (!trimmed) return "Enter your driver's license number.";
@@ -88,6 +87,7 @@ const VALIDATORS: Record<FieldKey, (value: string) => string | undefined> = {
 };
 
 export default function ProfileScreen() {
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
   const { user: authUser } = useAuth();
@@ -96,7 +96,6 @@ export default function ProfileScreen() {
 
   const [values, setValues] = useState<FormValues>(EMPTY_FORM);
   const [snapshot, setSnapshot] = useState<FormValues | null>(null);
-  const [phoneLocked, setPhoneLocked] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
@@ -122,22 +121,48 @@ export default function ProfileScreen() {
       ...EMPTY_FORM,
       fullName: application?.fullName ?? authUser?.full_name ?? '',
       email: application?.email ?? authUser?.email ?? '',
-      phone: application?.phone ?? authUser?.phone ?? '',
     };
     setValues(seed);
     setSnapshot(seed);
-    setPhoneLocked(!application?.phone && Boolean(authUser?.phone));
     setFieldErrors({});
     setError(null);
   }, [state, application, authUser]);
 
-  const dirty = snapshot != null && !sameForm(values, snapshot);
-  useDiscardGuard(dirty);
+  // The verified sign-in number is authoritative. It renders read-only below
+  // and is mirrored onto the application silently — late Clerk hydration
+  // updates this on re-render and must never block the form.
+  const verifiedPhone = authUser?.phone ?? application?.phone ?? null;
 
   // The provider de-duplicates concurrent application mutations by sharing
   // one in-flight promise. An explicit save must never be swallowed by a
-  // racing auto-save, so we track the auto-save promise and drain it first.
-  const autosaveInFlight = useRef<Promise<unknown> | null>(null);
+  // racing silent write (auto-save or phone sync), so every silent write
+  // registers here and the explicit save drains it first.
+  const silentWriteInFlight = useRef<Promise<unknown> | null>(null);
+  const registerSilentWrite = useCallback((request: Promise<unknown>) => {
+    silentWriteInFlight.current = request;
+    void request.finally(() => {
+      if (silentWriteInFlight.current === request) silentWriteInFlight.current = null;
+    });
+  }, []);
+
+  // One-shot silent sync: application.phone always converges on the verified
+  // sign-in number without the driver doing anything.
+  const phoneSynced = useRef(false);
+  useEffect(() => {
+    if (phoneSynced.current || !state || !application) return;
+    const clerkPhone = authUser?.phone;
+    if (!clerkPhone || application.phone === clerkPhone) return;
+    phoneSynced.current = true;
+    registerSilentWrite(
+      updateApplication({ phone: clerkPhone }).catch(() => {
+        // Retry naturally on next mount; the explicit save also carries it.
+        phoneSynced.current = false;
+      }),
+    );
+  }, [state, application, authUser, updateApplication, registerSilentWrite]);
+
+  const dirty = snapshot != null && !sameForm(values, snapshot);
+  useDiscardGuard(dirty);
 
   // Auto-save: fields that individually pass validation are written to the
   // server a moment after typing stops, so leaving mid-step loses nothing.
@@ -172,20 +197,18 @@ export default function ProfileScreen() {
         applied.priorExperience = values.priorExperience;
       }
       if (Object.keys(payload).length === 0) return;
-      const request = updateApplication(payload)
-        .then(() => {
-          // Only the fields actually sent count as saved; anything typed
-          // since stays dirty and re-arms the next auto-save.
-          setSnapshot((prev) => (prev ? { ...prev, ...applied } : prev));
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (autosaveInFlight.current === request) autosaveInFlight.current = null;
-        });
-      autosaveInFlight.current = request;
+      registerSilentWrite(
+        updateApplication(payload)
+          .then(() => {
+            // Only the fields actually sent count as saved; anything typed
+            // since stays dirty and re-arms the next auto-save.
+            setSnapshot((prev) => (prev ? { ...prev, ...applied } : prev));
+          })
+          .catch(() => {}),
+      );
     }, 1500);
     return () => clearTimeout(timer);
-  }, [values, snapshot, submitting, saved, updateApplication]);
+  }, [values, snapshot, submitting, saved, updateApplication, registerSilentWrite]);
 
   const setField = <K extends keyof FormValues>(field: K, value: FormValues[K]) => {
     setValues((prev) => ({ ...prev, [field]: value }));
@@ -216,10 +239,10 @@ export default function ProfileScreen() {
     setError(null);
     setSubmitting(true);
     try {
-      // Let any in-flight auto-save settle so the guarded mutation below is
-      // a fresh request carrying the full payload.
-      if (autosaveInFlight.current) {
-        await autosaveInFlight.current;
+      // Let any in-flight silent write settle so the guarded mutation below
+      // is a fresh request carrying the full payload.
+      if (silentWriteInFlight.current) {
+        await silentWriteInFlight.current;
       }
       const { weeklyHours, airportInterest, accessibleVehicle, priorExperience } = values;
       const preferences =
@@ -234,8 +257,10 @@ export default function ProfileScreen() {
       await updateApplication({
         fullName: values.fullName.trim(),
         email: values.email.trim(),
-        phone: values.phone.trim(),
         licenseNumber: values.licenseNumber.trim(),
+        // The verified sign-in number rides along so the step completes even
+        // if the background sync hasn't landed yet. Never user-edited here.
+        ...(verifiedPhone ? { phone: verifiedPhone } : {}),
         ...(preferences ? { preferences } : {}),
       });
       // Reset the snapshot so back navigation no longer warns.
@@ -294,21 +319,34 @@ export default function ProfileScreen() {
             autoComplete="email"
             error={fieldErrors.email}
           />
-          <View>
-            <Input
-              label="Phone"
-              value={values.phone}
-              onChangeText={(text) => setField('phone', text)}
-              onBlur={() => validateField('phone')}
-              keyboardType="phone-pad"
-              autoComplete="tel"
-              editable={!phoneLocked}
-              error={fieldErrors.phone}
-            />
-            {phoneLocked ? (
-              <Text style={styles.fieldHint}>Verified at sign-in.</Text>
-            ) : null}
-          </View>
+          {verifiedPhone ? (
+            <View
+              style={styles.phoneRow}
+              accessibilityLabel={`Phone number ${formatE164Display(verifiedPhone)}. Verified.`}
+            >
+              <View style={styles.phoneText}>
+                <Text style={styles.phoneLabel}>Phone number</Text>
+                <Text style={styles.phoneValue}>{formatE164Display(verifiedPhone)}</Text>
+              </View>
+              <View style={styles.verifiedBadge}>
+                <Ionicons name="checkmark-circle" size={15} color={colors.statusApproved} />
+                <Text style={styles.verifiedText}>Verified</Text>
+              </View>
+            </View>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Verify your phone number"
+              onPress={() => router.push('/onboarding/verify-phone')}
+              style={({ pressed }) => [styles.phoneRow, pressed && styles.phoneRowPressed]}
+            >
+              <View style={styles.phoneText}>
+                <Text style={styles.phoneLabel}>Phone number</Text>
+                <Text style={styles.phoneMissing}>Verify your phone number</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={colors.gray400} />
+            </Pressable>
+          )}
           <Input
             label="Driver's license number"
             value={values.licenseNumber}
@@ -404,6 +442,25 @@ const styles = StyleSheet.create({
   subtitle: { ...typography.body, color: colors.textSecondary },
   fields: { marginTop: spacing.xl, gap: spacing.lg },
   fieldHint: { ...typography.small, color: colors.textMuted, marginTop: spacing.xs },
+  phoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 56,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.gray50,
+    gap: spacing.md,
+  },
+  phoneRowPressed: { backgroundColor: colors.gray100 },
+  phoneText: { flex: 1, gap: 1 },
+  phoneLabel: { ...typography.small, color: colors.textMuted },
+  phoneValue: { ...typography.bodyBold, color: colors.text },
+  phoneMissing: { ...typography.bodyBold, color: colors.text },
+  verifiedBadge: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  verifiedText: { ...typography.caption, color: colors.statusApproved },
   optionalSection: {
     marginTop: spacing['2xl'],
     padding: spacing.xl,

@@ -45,6 +45,9 @@ interface AuthActions {
   /** Email one-time code — an alternative to phone for drivers without SMS. */
   sendEmailOtp: (email: string) => Promise<{ success: boolean; error?: string }>;
   verifyEmailOtp: (email: string, code: string) => Promise<{ success: boolean; error?: string }>;
+  /** Re-reads the platform identity after Clerk-side changes (e.g. a newly
+   * verified phone number). Never throws — a failure keeps the old value. */
+  refreshProfile: () => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -267,6 +270,10 @@ function useClerkAuthValue(): AuthContextValue {
     [signIn, signUp, setActiveSignIn, setActiveSignUp, loadProfile],
   );
 
+  const refreshProfile = useCallback(async () => {
+    await loadProfile().catch(() => {});
+  }, [loadProfile]);
+
   const signOut = useCallback(async () => {
     setUser(null);
     setProfileResolved(false);
@@ -286,9 +293,21 @@ function useClerkAuthValue(): AuthContextValue {
       verifyOtp,
       sendEmailOtp,
       verifyEmailOtp,
+      refreshProfile,
       signOut,
     }),
-    [isSignedIn, user, busy, initialized, sendOtp, verifyOtp, sendEmailOtp, verifyEmailOtp, signOut],
+    [
+      isSignedIn,
+      user,
+      busy,
+      initialized,
+      sendOtp,
+      verifyOtp,
+      sendEmailOtp,
+      verifyEmailOtp,
+      refreshProfile,
+      signOut,
+    ],
   );
 }
 
