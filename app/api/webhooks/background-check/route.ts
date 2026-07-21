@@ -14,7 +14,11 @@ import { pushTokenForUser, sendPushNotification } from '@/lib/push';
 // ═══════════════════════════════════════════════════════════════════════════
 
 function verifySignature(rawBody: string, signature: string | null): boolean {
-  const secret = process.env.BACKGROUND_CHECK_WEBHOOK_SECRET;
+  // Checkr signs webhooks with HMAC-SHA256 keyed by the account API key.
+  // A dedicated BACKGROUND_CHECK_WEBHOOK_SECRET (if set) takes precedence so
+  // a future provider with its own signing secret needs no code change.
+  const secret =
+    process.env.BACKGROUND_CHECK_WEBHOOK_SECRET ?? process.env.CHECKR_API_KEY;
   if (!secret || !signature) return false;
   const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
   const a = Buffer.from(expected);
