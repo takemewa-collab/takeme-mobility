@@ -487,6 +487,11 @@ export async function PUT(request: NextRequest) {
               .update({ final_fare: pay.amount })
               .eq('id', body.rideId);
             console.log('[driver/rides] captured', captured.id, 'for ride', body.rideId);
+
+            // Settle the driver's side: credit their wallet with their share
+            // of the captured fare (idempotent — the webhook path may race).
+            const { creditRideEarning } = await import('@/lib/earnings');
+            await creditRideEarning({ rideId: body.rideId, fareAmount: Number(pay.amount) });
           } else {
             await cancelPaymentIntent(pay.stripe_payment_intent, 'abandoned');
             await svc.from('payments')

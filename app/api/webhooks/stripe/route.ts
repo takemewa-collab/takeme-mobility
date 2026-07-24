@@ -157,6 +157,15 @@ export async function POST(request: NextRequest) {
             })
             .eq('id', rideId)
             .neq('status', 'completed');
+
+          // Credit the driver's share of the captured fare. Idempotent per
+          // ride — the driver-complete API path usually settles first and
+          // this is the Stripe-retried safety net.
+          const { creditRideEarning } = await import('@/lib/earnings');
+          await creditRideEarning({
+            rideId,
+            fareAmount: Number(obj.amount_received ?? obj.amount) / 100,
+          });
         }
 
         break;
