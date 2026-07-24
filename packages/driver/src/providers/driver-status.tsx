@@ -11,8 +11,9 @@ import { AppState } from 'react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import type { DriverStatus, Coordinates } from '@takeme/shared';
-import { ApiClient, ApiError, API, DRIVER_LOCATION_INTERVAL_MS } from '@takeme/shared';
+import { ApiClient, ApiError, API, DRIVER_LOCATION_INTERVAL_MS, LOCATION_THROTTLE_MS } from '@takeme/shared';
 import { getClerkToken } from '@/lib/clerk';
+import { heartbeatPayload, shouldSendHeartbeat } from '@/lib/location-heartbeat';
 import type { ActivationState } from '@/types/onboarding';
 import { useAuth } from './auth';
 
@@ -64,6 +65,12 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
   });
   const [watchGeneration, setWatchGeneration] = useState(0);
 
+  // Foreground heartbeat bookkeeping. The status lives in a ref so the
+  // long-lived watch callback always sees the current value.
+  const statusRef = useRef(state.status);
+  statusRef.current = state.status;
+  const lastHeartbeatAtRef = useRef<number | null>(null);
+
   const apiClient = useMemo(
     () =>
       new ApiClient({
@@ -71,6 +78,32 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
         getAccessToken: getClerkToken,
       }),
     [],
+  );
+
+  // ROOT-CAUSE FIX: the foreground watch previously only updated local state;
+  // the server POST lived solely in the background task, which requires the
+  // "Always" permission — a While-Using driver was invisible to dispatch.
+  // Online drivers now heartbeat from the foreground watch too, throttled.
+  const sendHeartbeat = useCallback(
+    (coords: { latitude: number; longitude: number; heading?: number | null; speed?: number | null }) => {
+      const now = Date.now();
+      if (
+        !shouldSendHeartbeat({
+          status: statusRef.current,
+          lastSentAt: lastHeartbeatAtRef.current,
+          now,
+          throttleMs: LOCATION_THROTTLE_MS,
+        })
+      ) {
+        return;
+      }
+      lastHeartbeatAtRef.current = now;
+      apiClient.post(API.DRIVER_LOCATION, heartbeatPayload(coords)).catch(() => {
+        // Heartbeats are periodic — the next one retries; allow it promptly.
+        lastHeartbeatAtRef.current = null;
+      });
+    },
+    [apiClient],
   );
 
   const applyPermission = useCallback((status: Location.PermissionStatus) => {
@@ -186,6 +219,7 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
               location: { latitude: fix.coords.latitude, longitude: fix.coords.longitude },
               locationStatus: 'available',
             }));
+            sendHeartbeat(fix.coords);
           },
         );
       } catch {
@@ -206,7 +240,7 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
       sub?.remove();
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
-  }, [state.locationPermission, watchGeneration]);
+  }, [state.locationPermission, watchGeneration, sendHeartbeat]);
 
   const retryLocation = useCallback(() => {
     setWatchGeneration((generation) => generation + 1);
@@ -249,6 +283,15 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
       }
 
       setState((prev) => ({ ...prev, status: 'available', loading: false }));
+      statusRef.current = 'available';
+
+      // Dispatch only sees drivers with a heartbeat fresher than 60s — send
+      // one right now instead of waiting for the next watch tick.
+      lastHeartbeatAtRef.current = null;
+      const seed =
+        (await Location.getLastKnownPositionAsync().catch(() => null)) ??
+        (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }).catch(() => null));
+      if (seed) sendHeartbeat(seed.coords);
     } catch (err) {
       // The platform refuses `available` until the driver is activated; the
       // 403 body carries the activation decision so the UI can route to the
@@ -272,7 +315,7 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
         error: err instanceof Error ? err.message : 'Failed to go online',
       }));
     }
-  }, [state.locationPermission, state.isBackgroundPermitted, apiClient]);
+  }, [state.locationPermission, state.isBackgroundPermitted, apiClient, sendHeartbeat]);
 
   const goOffline = useCallback(async () => {
     setState((prev) => ({ ...prev, loading: true, error: null }));
