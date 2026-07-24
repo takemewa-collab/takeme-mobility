@@ -162,6 +162,25 @@ async function cancelRideNoDrivers(rideId: string, attempts: number): Promise<vo
     .eq('id', rideId)
     .eq('status', 'searching_driver');
 
+  // Release the rider's card hold — no trip happened, nothing may be charged.
+  // Best-effort: a Stripe hiccup must not break the cancellation itself.
+  try {
+    const { data: pay } = await supabase
+      .from('payments')
+      .select('stripe_payment_intent, status')
+      .eq('ride_id', rideId)
+      .maybeSingle();
+    if (pay?.stripe_payment_intent && pay.status !== 'captured' && pay.status !== 'cancelled') {
+      const { cancelPaymentIntent } = await import('@/lib/stripe');
+      await cancelPaymentIntent(pay.stripe_payment_intent, 'abandoned');
+      await supabase.from('payments').update({ status: 'cancelled' }).eq('ride_id', rideId);
+      console.log(`[dispatch] released hold for undispatchable ride ${rideId}`);
+    }
+  } catch (payErr) {
+    Sentry.captureException(payErr, { tags: { component: 'dispatch', rideId } });
+    console.error(`[dispatch] failed to release hold for ride ${rideId}:`, payErr);
+  }
+
   // Log event
   await supabase.from('ride_events').insert({
     ride_id: rideId,
