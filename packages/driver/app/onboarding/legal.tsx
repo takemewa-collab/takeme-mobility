@@ -16,12 +16,12 @@ import { ApiError } from '@takeme/shared';
 import { Button } from '@/components/ui';
 import { ErrorView, LoadingView, StepProgress, SubmitSuccess } from '@/components/onboarding';
 import { exitTask } from '@/lib/nav';
+import { gateLegalDocuments, LEGAL_GATE_REFERENCE } from '@/lib/legal-gate';
+import { reachedEnd } from '@/lib/scroll-gate';
 import { useStepFlow } from '@/hooks/use-step-flow';
 import { useOnboarding, onboardingErrorMessage } from '@/providers/onboarding';
 import type { LegalConsentInput, LegalDocumentContent } from '@/types/onboarding';
 import { borderRadius, colors, spacing, typography } from '@/theme';
-
-const SCROLL_END_THRESHOLD = 24;
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -71,6 +71,24 @@ export default function LegalScreen() {
   const collected = useRef<LegalConsentInput[]>([]);
   const scrollRef = useRef<ScrollView>(null);
   const viewportHeight = useRef(0);
+  const contentHeight = useRef(0);
+
+  // A driver must never be asked to accept draft or legally unapproved copy.
+  // Production fails safe (no acceptance UI); dev builds may preview drafts
+  // behind an explicit banner. See src/lib/legal-gate.ts.
+  const gateMode = useMemo(() => {
+    if (!documents || documents.length === 0) return 'accept' as const;
+    return gateLegalDocuments(
+      documents.map((d) => ({
+        key: d.key,
+        version: d.version,
+        title: d.title,
+        body: d.body,
+        effectiveAt: d.effectiveAt ?? null,
+      })),
+      { legalReviewPending: false, isDevBuild: __DEV__ },
+    );
+  }, [documents]);
 
   const consents = useMemo(() => state?.consents ?? [], [state]);
   const isAccepted = useCallback(
@@ -120,6 +138,26 @@ export default function LegalScreen() {
   }
   if (loadError) return <ErrorView message={loadError} onRetry={() => void load()} />;
   if (!documents) return <LoadingView label="Loading documents…" />;
+
+  // Draft/unapproved copy in a production build — fail safe: show a clear
+  // internal-configuration notice and collect no consent.
+  if (gateMode === 'blocked') {
+    return (
+      <View style={[styles.container, { paddingTop: spacing.xl }]}>
+        <View style={styles.content}>
+          <Text style={styles.title}>Agreements not available yet</Text>
+          <Text style={[styles.subtitle, { marginTop: spacing.md }]}>
+            The documents for this step aren&apos;t ready to be accepted. This is a
+            configuration issue on our side — no action is needed from you, and
+            support has what they need with reference {LEGAL_GATE_REFERENCE}.
+          </Text>
+        </View>
+        <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.lg }]}>
+          <Button title="Done" onPress={() => exitTask(router)} fullWidth size="lg" />
+        </View>
+      </View>
+    );
+  }
 
   const finish = async () => {
     if (submitting) return;
@@ -186,9 +224,19 @@ export default function LegalScreen() {
   const isLast = pageIndex >= pendingDocs.length - 1;
   const acceptEnabled = !doc.requiresScroll || scrolledToEnd;
 
+  // End detection runs on BOTH throttled scroll events and the momentum
+  // settle — a fast flick's last onScroll can land short of the bottom and
+  // only onMomentumScrollEnd sees the rest position (src/lib/scroll-gate.ts).
+  // The result is sticky: scrolling back up never revokes it.
   const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    if (contentOffset.y + layoutMeasurement.height >= contentSize.height - SCROLL_END_THRESHOLD) {
+    if (
+      reachedEnd({
+        offsetY: contentOffset.y,
+        viewportH: layoutMeasurement.height,
+        contentH: contentSize.height,
+      })
+    ) {
       setScrolledToEnd(true);
     }
   };
@@ -211,6 +259,13 @@ export default function LegalScreen() {
     <View style={[styles.container, { paddingTop: spacing.xl }]}>
       <View style={styles.content}>
         {!isDisclosureFlow ? <StepProgress current={stepNumber} total={totalSteps} /> : null}
+        {gateMode === 'dev_preview' ? (
+          <View style={styles.devBanner}>
+            <Text style={styles.devBannerText}>
+              Development preview — draft documents, not final legal copy.
+            </Text>
+          </View>
+        ) : null}
         {versionNotice ? (
           <View style={styles.notice}>
             <Text style={styles.noticeText}>
@@ -231,13 +286,24 @@ export default function LegalScreen() {
           style={styles.body}
           contentContainerStyle={styles.bodyContent}
           onScroll={onScroll}
+          onMomentumScrollEnd={onScroll}
+          onScrollEndDrag={onScroll}
           scrollEventThrottle={64}
           onLayout={(e) => {
             viewportHeight.current = e.nativeEvent.layout.height;
+            // Short documents have no end to scroll to — layout and content
+            // callbacks can fire in either order, so check on both.
+            if (
+              reachedEnd({ offsetY: 0, viewportH: viewportHeight.current, contentH: contentHeight.current })
+            ) {
+              setScrolledToEnd(true);
+            }
           }}
           onContentSizeChange={(_, h) => {
-            // Short documents have no end to scroll to.
-            if (viewportHeight.current > 0 && h <= viewportHeight.current) {
+            contentHeight.current = h;
+            if (
+              reachedEnd({ offsetY: 0, viewportH: viewportHeight.current, contentH: h })
+            ) {
               setScrolledToEnd(true);
             }
           }}
@@ -293,6 +359,13 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   noticeText: { ...typography.caption, color: colors.text },
+  devBanner: {
+    borderRadius: borderRadius.lg,
+    padding: spacing.md,
+    backgroundColor: colors.gray900,
+    marginBottom: spacing.md,
+  },
+  devBannerText: { ...typography.caption, color: colors.white },
   acceptedList: { marginTop: spacing.xl, gap: spacing.sm },
   acceptedRow: {
     minHeight: 56,
