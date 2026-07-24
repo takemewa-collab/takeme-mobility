@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { heartbeatPayload, shouldSendHeartbeat } from '../location-heartbeat';
+import { heartbeatPayload, shouldRunStationaryBeat, shouldSendHeartbeat } from '../location-heartbeat';
 
 describe('shouldSendHeartbeat', () => {
   it('never sends while offline (server 400s those)', () => {
@@ -22,6 +22,34 @@ describe('shouldSendHeartbeat', () => {
     ).toBe(false);
     expect(
       shouldSendHeartbeat({ status: 'available', lastSentAt: 1000, now: 4000, throttleMs: 3000 }),
+    ).toBe(true);
+  });
+});
+
+describe('shouldRunStationaryBeat', () => {
+  it('never beats while offline', () => {
+    expect(
+      shouldRunStationaryBeat({ status: 'offline', lastSentAt: null, now: 1000, intervalMs: 20_000 }),
+    ).toBe(false);
+  });
+
+  it('beats when no heartbeat has ever been sent', () => {
+    for (const status of ['available', 'busy', 'on_trip'] as const) {
+      expect(
+        shouldRunStationaryBeat({ status, lastSentAt: null, now: 1000, intervalMs: 20_000 }),
+      ).toBe(true);
+    }
+  });
+
+  it('defers to a recent watch-driven heartbeat (moving driver)', () => {
+    expect(
+      shouldRunStationaryBeat({ status: 'available', lastSentAt: 90_000, now: 100_000, intervalMs: 20_000 }),
+    ).toBe(false);
+  });
+
+  it('beats once the last heartbeat is a full interval old (parked driver)', () => {
+    expect(
+      shouldRunStationaryBeat({ status: 'available', lastSentAt: 80_000, now: 100_000, intervalMs: 20_000 }),
     ).toBe(true);
   });
 });

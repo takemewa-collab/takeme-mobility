@@ -44,6 +44,13 @@ module.exports = ({ config }) => ({
       // HTTPS-only app → no non-exempt encryption (skips export-compliance hold).
       ITSAppUsesNonExemptEncryption: false,
     },
+    entitlements: {
+      // Ride offers are delivered with interruption-level "time-sensitive" —
+      // iOS requires this entitlement for the level to be honored. This is
+      // NOT the Critical Alerts entitlement; silent mode / Focus behavior is
+      // respected within Apple's rules.
+      'com.apple.developer.usernotifications.time-sensitive': true,
+    },
   },
   android: {
     adaptiveIcon: {
@@ -81,6 +88,9 @@ module.exports = ({ config }) => ({
       {
         icon: './assets/notification-icon.png',
         color: '#111111',
+        // Bundled ride-request alert (iOS bundle + android/res/raw) — referenced
+        // by filename in the push payload and the Android channel config.
+        sounds: ['./assets/sounds/ride_request.wav'],
       },
     ],
     'expo-task-manager',

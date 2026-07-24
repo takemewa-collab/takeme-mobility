@@ -85,8 +85,10 @@ export default function DashboardScreen() {
     const handleRideRequest = (data: Record<string, unknown> | null | undefined) => {
       const offer = offerFromPushData(data);
       if (!offer) return false;
+      // The trip provider owns presentation: it starts the alert sound,
+      // navigates to the full-screen offer, and expires it on the server
+      // clock. Dedupe against the poll path also lives there.
       setIncomingOffer(offer);
-      router.push('/(app)/trip/incoming');
       return true;
     };
 

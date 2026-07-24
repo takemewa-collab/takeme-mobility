@@ -24,6 +24,7 @@
     "@takeme/shared": "*",
     "expo": "~54.0.0",
     "expo-auth-session": "~7.0.11",
+    "expo-av": "~16.0.8",
     "expo-constants": "~18.0.0",
     "expo-crypto": "~15.0.9",
     "expo-dev-client": "~6.0.0",

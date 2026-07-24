@@ -3,14 +3,23 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { API, type ApiClient } from '@takeme/shared';
 
-// Foreground presentation: show ride requests even while the app is open.
+// Foreground presentation. Ride requests get NO OS banner and NO OS sound
+// while the app is open — the trip provider presents the full-screen offer
+// with its own looping alert; letting the banner fire too would double the
+// sound and bury the primary surface. Everything else keeps the default
+// banner treatment.
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
+  handleNotification: async (notification) => {
+    const isRideRequest =
+      (notification.request.content.data as Record<string, unknown> | null)?.type ===
+      'ride_request';
+    return {
+      shouldShowBanner: !isRideRequest,
+      shouldShowList: true,
+      shouldPlaySound: !isRideRequest,
+      shouldSetBadge: false,
+    };
+  },
 });
 
 /**
@@ -30,10 +39,20 @@ export async function registerForPush(apiClient: ApiClient): Promise<void> {
     if (status !== 'granted') return;
 
     if (Platform.OS === 'android') {
+      // Dedicated high-importance channel: heads-up presentation, custom
+      // TAKEME alert sound (bundled via the expo-notifications `sounds`
+      // config), strong vibration, visible on the lock screen. NOTE: Android
+      // freezes channel settings after first creation — changing them needs a
+      // new channel id.
       await Notifications.setNotificationChannelAsync('ride-requests', {
         name: 'Ride requests',
+        description: 'Incoming ride offers that need an immediate response.',
         importance: Notifications.AndroidImportance.MAX,
-        sound: 'default',
+        sound: 'ride_request.wav',
+        vibrationPattern: [0, 400, 150, 400, 150, 400],
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        enableVibrate: true,
+        bypassDnd: false,
       });
     }
 

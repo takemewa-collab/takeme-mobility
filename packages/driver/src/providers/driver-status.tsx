@@ -11,9 +11,9 @@ import { AppState } from 'react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import type { DriverStatus, Coordinates } from '@takeme/shared';
-import { ApiClient, ApiError, API, DRIVER_LOCATION_INTERVAL_MS, LOCATION_THROTTLE_MS } from '@takeme/shared';
+import { ApiClient, ApiError, API, DRIVER_LOCATION_INTERVAL_MS, LOCATION_THROTTLE_MS, STATIONARY_HEARTBEAT_MS } from '@takeme/shared';
 import { getClerkToken } from '@/lib/clerk';
-import { heartbeatPayload, shouldSendHeartbeat } from '@/lib/location-heartbeat';
+import { heartbeatPayload, shouldRunStationaryBeat, shouldSendHeartbeat } from '@/lib/location-heartbeat';
 import type { ActivationState } from '@/types/onboarding';
 import { useAuth } from './auth';
 
@@ -96,6 +96,16 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
   // the server POST lived solely in the background task, which requires the
   // "Always" permission — a While-Using driver was invisible to dispatch.
   // Online drivers now heartbeat from the foreground watch too, throttled.
+  // Last raw fix from the watcher — the stationary timer's fallback when a
+  // fresh on-demand fix cannot be obtained.
+  const lastCoordsRef = useRef<{
+    latitude: number;
+    longitude: number;
+    heading?: number | null;
+    speed?: number | null;
+    accuracy?: number | null;
+  } | null>(null);
+
   const sendHeartbeat = useCallback(
     (coords: { latitude: number; longitude: number; heading?: number | null; speed?: number | null }) => {
       const now = Date.now();
@@ -237,6 +247,7 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
               },
               locationStatus: 'available',
             }));
+            lastCoordsRef.current = fix.coords;
             sendHeartbeat(fix.coords);
           },
         );
@@ -259,6 +270,42 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
   }, [state.locationPermission, watchGeneration, sendHeartbeat]);
+
+  // STATIONARY HEARTBEAT — the fix for the live "No Drivers Available with an
+  // online driver nearby" incident. watchPositionAsync's timeInterval is
+  // Android-only; a parked iPhone produces no callbacks, so the watch-driven
+  // heartbeat stops and the server marks the driver location-stale. This
+  // timer beats every STATIONARY_HEARTBEAT_MS while online, requesting a
+  // fresh fix (falling back to the last watch fix) so an online driver can
+  // NEVER go stale by standing still.
+  useEffect(() => {
+    if (state.locationPermission !== 'granted') return;
+
+    const id = setInterval(async () => {
+      if (
+        !shouldRunStationaryBeat({
+          status: statusRef.current,
+          lastSentAt: lastHeartbeatAtRef.current,
+          now: Date.now(),
+          intervalMs: STATIONARY_HEARTBEAT_MS,
+        })
+      ) {
+        return;
+      }
+      try {
+        const fix = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        lastCoordsRef.current = fix.coords;
+        sendHeartbeat(fix.coords);
+      } catch {
+        const cached = lastCoordsRef.current;
+        if (cached) sendHeartbeat(cached);
+      }
+    }, STATIONARY_HEARTBEAT_MS);
+
+    return () => clearInterval(id);
+  }, [state.locationPermission, sendHeartbeat]);
 
   const retryLocation = useCallback(() => {
     setWatchGeneration((generation) => generation + 1);

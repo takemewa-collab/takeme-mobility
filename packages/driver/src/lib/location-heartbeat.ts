@@ -26,6 +26,27 @@ export function shouldSendHeartbeat(input: {
   return input.now - input.lastSentAt >= input.throttleMs;
 }
 
+/**
+ * Should the stationary-heartbeat timer fire a beat right now?
+ *
+ * watchPositionAsync's timeInterval is ANDROID-ONLY: on iOS, callbacks come
+ * from movement (distanceInterval) — a parked driver gets none, sends no
+ * heartbeats, exceeds the server's location-freshness window, and silently
+ * becomes invisible to matching ("No Drivers Available" beside an online
+ * driver). The timer covers exactly that gap: it beats only when the watch
+ * has NOT recently heartbeat on its own.
+ */
+export function shouldRunStationaryBeat(input: {
+  status: DriverOnlineStatus;
+  lastSentAt: number | null;
+  now: number;
+  intervalMs: number;
+}): boolean {
+  if (input.status === 'offline') return false;
+  if (input.lastSentAt == null) return true;
+  return input.now - input.lastSentAt >= input.intervalMs;
+}
+
 export interface HeartbeatPayload {
   lat: number;
   lng: number;

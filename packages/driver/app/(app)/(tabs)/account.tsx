@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '@/providers/auth';
 import { useTrip } from '@/providers/trip';
 import { getClerkToken } from '@/lib/clerk';
+import { isAlertSoundEnabled, setAlertSoundEnabled } from '@/lib/offer-alert';
 import type { DriverRidePreferences } from '@takeme/shared';
 import { formatPhone, API, ApiError } from '@takeme/shared';
 import { colors } from '@/theme/colors';
@@ -37,6 +38,23 @@ export default function DriverAccountScreen() {
   // an older server (endpoint absent) degrades to no section at all.
   const [prefs, setPrefs] = useState<DriverRidePreferences | null>(null);
   const [enrolling, setEnrolling] = useState(false);
+
+  // Ride Request Alerts: in-app sound toggle. Vibration and push alerts stay
+  // on regardless — the sound preference must never silently kill the alert.
+  const [alertSound, setAlertSound] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    isAlertSoundEnabled().then((enabled) => {
+      if (!cancelled) setAlertSound(enabled);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const handleAlertSoundToggle = (value: boolean) => {
+    setAlertSound(value);
+    void setAlertSoundEnabled(value);
+  };
 
   useEffect(() => {
     if (!apiClient) return;
@@ -231,6 +249,26 @@ export default function DriverAccountScreen() {
             ) : null}
           </View>
         ) : null}
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Ride request alerts</Text>
+          <View style={styles.prefRow}>
+            <View style={styles.prefInfo}>
+              <Text style={styles.menuLabel}>Alert sound</Text>
+              <Text style={styles.menuSubtitle}>
+                Play the loud TAKEME alert for incoming requests. Vibration and
+                notifications stay on.
+              </Text>
+            </View>
+            <Switch
+              value={alertSound}
+              onValueChange={handleAlertSoundToggle}
+              trackColor={{ false: colors.gray300, true: colors.gray900 }}
+              thumbColor={colors.white}
+              ios_backgroundColor={colors.gray300}
+            />
+          </View>
+        </View>
 
         {/* Vehicle and payout self-service ship in the next release; until the
             screens exist we don't show doors that open onto "Coming soon". */}

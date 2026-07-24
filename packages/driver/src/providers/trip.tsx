@@ -17,8 +17,10 @@ import type {
   RoutePoint,
   RoutePointStatus,
 } from '@takeme/shared';
-import { ApiClient, API } from '@takeme/shared';
+import { router } from 'expo-router';
+import { ApiClient, API, DISPATCH } from '@takeme/shared';
 import { getClerkToken } from '@/lib/clerk';
+import { startOfferAlert, stopOfferAlert } from '@/lib/offer-alert';
 import { useSupabase } from './supabase';
 import { useAuth } from './auth';
 
@@ -183,41 +185,83 @@ function tripReducer(state: TripState, action: TripAction): TripState {
 }
 
 /**
- * A dispatch OFFER, delivered by push notification while the ride is still
- * `searching_driver`. It is NOT an assigned trip — the ride has no
- * assigned_driver_id yet, so the realtime assignment channel can't see it.
- * The payload mirrors lib/push.ts rideRequestNotification on the server.
+ * A dispatch OFFER while the ride is still `searching_driver`. It is NOT an
+ * assigned trip — the ride has no assigned_driver_id yet, so the realtime
+ * assignment channel can't see it. Two delivery paths feed the same state:
+ * the push payload (immediate) and GET /api/driver/offer (restore after cold
+ * start/reconnect + poll fallback), deduped by ride id.
  */
 export interface IncomingOffer {
   rideId: string;
   pickupAddress: string;
   dropoffAddress: string;
   estimatedFare: number;
+  /** Driver's ~80% share of the fare, when known (server-computed on restore). */
+  estimatedEarnings: number | null;
   distanceKm: number | null;
   durationMin: number | null;
+  pickupLat: number | null;
+  pickupLng: number | null;
+  /** Straight-line meters from the driver to the pickup at offer time. */
+  pickupDistanceM: number | null;
   petFriendly: boolean;
-  /** When the offer landed on the device — drives the countdown. */
+  /** When the offer landed on the device. */
   receivedAt: number;
+  /**
+   * Server-authoritative expiry (epoch ms). Fallback when an old server
+   * omitted it: receivedAt + ACCEPT_TIMEOUT_SEC.
+   */
+  expiresAt: number;
 }
+
+const num = (v: unknown): number | null => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
 
 /** Parse a push payload into an offer; null when it isn't a ride request. */
 export function offerFromPushData(
   data: Record<string, unknown> | null | undefined,
 ): IncomingOffer | null {
   if (!data || data.type !== 'ride_request' || typeof data.rideId !== 'string') return null;
-  const num = (v: unknown): number | null => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  };
+  const receivedAt = Date.now();
   return {
     rideId: data.rideId,
     pickupAddress: String(data.pickupAddress ?? 'Pickup'),
     dropoffAddress: String(data.dropoffAddress ?? 'Destination'),
     estimatedFare: num(data.estimatedFare) ?? 0,
+    estimatedEarnings: null,
     distanceKm: num(data.distanceKm),
     durationMin: num(data.durationMin),
+    pickupLat: num(data.pickupLat),
+    pickupLng: num(data.pickupLng),
+    pickupDistanceM: num(data.pickupDistanceM),
     petFriendly: data.petFriendly === true,
+    receivedAt,
+    expiresAt: num(data.expiresAt) ?? receivedAt + DISPATCH.ACCEPT_TIMEOUT_SEC * 1000,
+  };
+}
+
+/** Server offer payload (GET /api/driver/offer) → IncomingOffer. */
+export function offerFromServerPayload(
+  offer: Record<string, unknown> | null | undefined,
+): IncomingOffer | null {
+  if (!offer || typeof offer.rideId !== 'string' || typeof offer.expiresAt !== 'number') return null;
+  if (offer.expiresAt <= Date.now()) return null; // never surface an expired offer
+  return {
+    rideId: offer.rideId,
+    pickupAddress: String(offer.pickupAddress ?? 'Pickup'),
+    dropoffAddress: String(offer.dropoffAddress ?? 'Destination'),
+    estimatedFare: num(offer.estimatedFare) ?? 0,
+    estimatedEarnings: num(offer.estimatedEarnings),
+    distanceKm: num(offer.distanceKm),
+    durationMin: num(offer.durationMin),
+    pickupLat: num(offer.pickupLat),
+    pickupLng: num(offer.pickupLng),
+    pickupDistanceM: num(offer.pickupDistanceM),
+    petFriendly: offer.petFriendly === true,
     receivedAt: Date.now(),
+    expiresAt: offer.expiresAt,
   };
 }
 
@@ -517,15 +561,129 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     }
   }, [user, restoreActiveTrip]);
 
-  // Pending dispatch offer (push-delivered; rides row not yet assigned).
-  const [incomingOffer, setIncomingOffer] = useState<IncomingOffer | null>(null);
+  // Pending dispatch offer. Push seeds it instantly; GET /api/driver/offer
+  // restores it after cold start/reconnect and polls as a fallback. All
+  // delivery paths funnel through presentOffer for dedupe + expiry policy.
+  const [incomingOffer, setIncomingOfferState] = useState<IncomingOffer | null>(null);
+  const incomingOfferRef = useRef<IncomingOffer | null>(null);
+  incomingOfferRef.current = incomingOffer;
+  const activeTripRef = useRef(state.activeTrip);
+  activeTripRef.current = state.activeTrip;
+
+  const setIncomingOffer = useCallback((offer: IncomingOffer | null) => {
+    if (offer === null) {
+      setIncomingOfferState(null);
+      return;
+    }
+    // Never show an expired offer, never re-alert the ride we're already
+    // showing, never surface an offer over an active trip.
+    if (offer.expiresAt <= Date.now()) return;
+    if (activeTripRef.current) return;
+    const current = incomingOfferRef.current;
+    if (current && current.rideId === offer.rideId) {
+      // Same offer from a second channel — keep richer fields, no re-alert.
+      if (offer.estimatedEarnings != null && current.estimatedEarnings == null) {
+        setIncomingOfferState({ ...current, ...offer, receivedAt: current.receivedAt });
+      }
+      return;
+    }
+    setIncomingOfferState(offer);
+  }, []);
+
+  // Server-truth sync: restore the live offer after cold start/reconnect,
+  // enrich push offers (estimated earnings, live pickup distance), and poll
+  // while idle so a missed push is only ever seconds behind — and a ride
+  // reassigned to another driver closes here immediately.
+  const syncOfferFromServer = useCallback(async () => {
+    if (!apiClient || !user || activeTripRef.current) return;
+    const startedAt = Date.now();
+    try {
+      const res = await apiClient.get<{ offer: Record<string, unknown> | null }>(API.DRIVER_OFFER);
+      const serverOffer = offerFromServerPayload(res?.offer);
+      if (serverOffer) {
+        setIncomingOffer(serverOffer);
+      } else {
+        // Only clear offers that existed before this request started — a push
+        // landing mid-flight must not be wiped by a stale null.
+        const current = incomingOfferRef.current;
+        if (current && current.receivedAt < startedAt) {
+          setIncomingOfferState(null);
+        }
+      }
+    } catch {
+      // Poll is a fallback path — silence transient failures.
+    }
+  }, [apiClient, user, setIncomingOffer]);
+
+  // Alert + full-screen presentation lifecycle, keyed on the OFFER'S RIDE ID
+  // (not the object — a field-enrichment merge must not restart the sound or
+  // push a second screen). Stops on ANY terminal path; the offer self-expires
+  // on the server-authoritative clock.
+  const offerRideId = incomingOffer?.rideId ?? null;
+  useEffect(() => {
+    if (!offerRideId) {
+      void stopOfferAlert();
+      return;
+    }
+    let cancelled = false;
+    // Enrich a push-sourced offer with server-computed fields right away
+    // (earnings, live pickup distance) — merged without re-alerting.
+    if (incomingOfferRef.current?.estimatedEarnings == null) {
+      void syncOfferFromServer();
+    }
+    (async () => {
+      const soundStarted = await startOfferAlert(offerRideId);
+      if (cancelled || !apiClient) return;
+      // Observability acks — best-effort, never block the alert.
+      apiClient
+        .post(API.DRIVER_OFFER, { rideId: offerRideId, event: 'offer_displayed' })
+        .catch(() => {});
+      if (soundStarted) {
+        apiClient
+          .post(API.DRIVER_OFFER, { rideId: offerRideId, event: 'alert_sound_started' })
+          .catch(() => {});
+      }
+    })();
+
+    router.push('/(app)/trip/incoming');
+
+    const expiresAt = incomingOfferRef.current?.expiresAt ?? Date.now();
+    const expiry = setTimeout(() => {
+      apiClient
+        ?.post(API.DRIVER_OFFER, { rideId: offerRideId, event: 'offer_expired_client' })
+        .catch(() => {});
+      setIncomingOfferState((current) => (current?.rideId === offerRideId ? null : current));
+    }, Math.max(0, expiresAt - Date.now()));
+
+    return () => {
+      cancelled = true;
+      clearTimeout(expiry);
+      void stopOfferAlert();
+    };
+  }, [offerRideId, apiClient, syncOfferFromServer]);
 
   // An accepted/assigned trip supersedes any lingering offer card.
   useEffect(() => {
     if (state.activeTrip && incomingOffer?.rideId === state.activeTrip.id) {
-      setIncomingOffer(null);
+      setIncomingOfferState(null);
     }
   }, [state.activeTrip, incomingOffer]);
+
+  useEffect(() => {
+    if (!user) {
+      setIncomingOfferState(null);
+      return;
+    }
+    void syncOfferFromServer();
+    const interval = setInterval(() => void syncOfferFromServer(), 10_000);
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') void syncOfferFromServer();
+    });
+    return () => {
+      clearInterval(interval);
+      sub.remove();
+    };
+  }, [user, syncOfferFromServer]);
 
   const value = useMemo(
     () => ({
@@ -538,7 +696,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
       incomingOffer,
       setIncomingOffer,
     }),
-    [state, restoreActiveTrip, markRoutePoint, clearTrip, apiClient, incomingOffer],
+    [state, restoreActiveTrip, markRoutePoint, clearTrip, apiClient, incomingOffer, setIncomingOffer],
   );
 
   return (
