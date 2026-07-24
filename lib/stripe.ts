@@ -245,32 +245,11 @@ export async function verifyWebhookSignature(
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
   if (!secret) throw new Error('STRIPE_WEBHOOK_SECRET not configured');
 
-  // Stripe webhook signature uses HMAC-SHA256
-  const crypto = await import('crypto');
-  const parts = signature.split(',');
-  const timestamp = parts.find(p => p.startsWith('t='))?.slice(2);
-  const sig = parts.find(p => p.startsWith('v1='))?.slice(3);
-
-  if (!timestamp || !sig) throw new Error('Invalid signature format');
-
-  const signedPayload = `${timestamp}.${payload}`;
-  const expected = crypto
-    .createHmac('sha256', secret)
-    .update(signedPayload)
-    .digest('hex');
-
-  // Constant-time comparison — avoids a timing side-channel on the HMAC.
-  const sigBuf = Buffer.from(sig, 'hex');
-  const expBuf = Buffer.from(expected, 'hex');
-  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-    throw new Error('Webhook signature verification failed');
-  }
-
-  // Check timestamp tolerance (5 min)
-  const age = Math.floor(Date.now() / 1000) - parseInt(timestamp);
-  if (age > 300) throw new Error('Webhook timestamp too old');
-
-  return JSON.parse(payload);
+  // Official stripe-node verification (every v1 signature, constant-time,
+  // stale rejection) plus an explicit future-timestamp rejection.
+  // See lib/stripe-webhook.ts.
+  const { verifyStripeSignature } = await import('@/lib/stripe-webhook');
+  return verifyStripeSignature(payload, signature, secret);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

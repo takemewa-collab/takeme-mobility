@@ -84,7 +84,6 @@ export async function POST(request: NextRequest) {
       // ── Authorization successful ─────────────────────────────────────
       case 'payment_intent.amount_capturable_updated': {
         const piId = obj.id as string;
-        const rideId = (obj.metadata as Record<string, string>)?.ride_id;
 
         // Verify the payment exists in our database before updating
         const { data: existingPayment } = await supabase
@@ -314,74 +313,58 @@ export async function POST(request: NextRequest) {
       case 'issuing_transaction.created': {
         const txnId = obj.id as string;
         const cardId = obj.card as string ?? (obj.card as Record<string, unknown>)?.id as string;
-        const amount = Math.abs(obj.amount as number ?? 0);
+        const amountCents = Math.abs(obj.amount as number ?? 0);
         const merchantName = (obj.merchant_data as Record<string, unknown>)?.name as string ?? 'Unknown';
         const merchantCategory = (obj.merchant_data as Record<string, unknown>)?.category as string ?? '';
         const userId = (obj.metadata as Record<string, string>)?.user_id;
 
-        console.log(`[Webhook] Transaction: $${(amount / 100).toFixed(2)} at ${merchantName}`);
+        console.log(`[Webhook] Transaction: $${(amountCents / 100).toFixed(2)} at ${merchantName}`);
 
-        // Find the card in our DB
         const { data: card } = await supabase
           .from('takeme_cards')
-          .select('id, balance, total_cashback, cashback_rate_ev, cashback_rate_gas, cashback_rate_other')
+          .select('id, cashback_rate_ev, cashback_rate_gas, cashback_rate_other')
           .eq('stripe_card_id', cardId)
           .maybeSingle();
 
-        if (card && userId) {
-          const amountDollars = amount / 100;
+        let applied = false;
+        if (card && userId && txnId) {
+          const { issuingAmountDollars, computeCashback, cashbackRateFor } = await import('@/lib/issuing');
+          const rates = {
+            ev: Number(card.cashback_rate_ev),
+            gas: Number(card.cashback_rate_gas),
+            other: Number(card.cashback_rate_other),
+          };
+          const amountDollars = issuingAmountDollars(amountCents);
+          const cashback = computeCashback(amountDollars, merchantCategory, rates);
+          const ratePct = (cashbackRateFor(merchantCategory, rates) * 100).toFixed(0);
 
-          // Calculate cashback
-          let cashbackRate = Number(card.cashback_rate_other) / 100;
-          if (merchantCategory.includes('electric') || merchantCategory.includes('fuel_electric')) {
-            cashbackRate = Number(card.cashback_rate_ev) / 100;
-          } else if (merchantCategory.includes('fuel') || merchantCategory.includes('gas')) {
-            cashbackRate = Number(card.cashback_rate_gas) / 100;
-          }
-          const cashback = Math.round(amountDollars * cashbackRate * 100) / 100;
-
-          // Update card balance and cashback
-          await supabase
-            .from('takeme_cards')
-            .update({
-              balance: Number(card.balance) - amountDollars,
-              total_cashback: Number(card.total_cashback) + cashback,
-            })
-            .eq('id', card.id);
-
-          // Update driver_balances card_balance
-          await supabase.rpc('decrement_card_balance', { p_driver_id: userId, p_amount: amountDollars });
-
-          // Store finalized transaction
-          await supabase.from('card_transactions').insert({
-            card_id: card.id,
-            user_id: userId,
-            type: 'charge',
-            amount: amountDollars,
-            description: merchantName,
-            category: merchantCategory,
-            status: 'completed',
+          // One atomic, idempotent DB transaction (migration 053): the
+          // stripe_txn_id unique claim, balance deduction, driver_balances
+          // mirror, and cashback row commit or roll back together. Replays
+          // and concurrent duplicates return false and mutate nothing.
+          const { data: appliedRes, error: applyErr } = await supabase.rpc('apply_issuing_transaction', {
+            p_stripe_txn_id: txnId,
+            p_card_id: card.id,
+            p_user_id: userId,
+            p_amount: amountDollars,
+            p_cashback: cashback,
+            p_merchant: merchantName,
+            p_category: merchantCategory,
+            p_cashback_description: `${ratePct}% cashback: ${merchantName}`,
           });
-
-          // Store cashback as separate transaction
-          if (cashback > 0) {
-            await supabase.from('card_transactions').insert({
-              card_id: card.id,
-              user_id: userId,
-              type: 'cashback',
-              amount: cashback,
-              description: `${(cashbackRate * 100).toFixed(0)}% cashback: ${merchantName}`,
-              category: 'cashback_reward',
-              status: 'completed',
-            });
-          }
+          // Throwing releases the dedup claim so Stripe's retry re-runs the
+          // settlement — safe, because the RPC left nothing half-applied.
+          if (applyErr) throw new Error(`apply_issuing_transaction failed: ${applyErr.message}`);
+          applied = appliedRes === true;
+          if (!applied) console.log(`[Webhook] Issuing txn ${txnId} already settled — skipped`);
         }
 
         await logIssuingEvent(supabase, 'transaction_created', txnId, userId, {
           card_id: cardId,
-          amount_cents: amount,
+          amount_cents: amountCents,
           merchant: merchantName,
           category: merchantCategory,
+          applied,
         });
 
         break;
