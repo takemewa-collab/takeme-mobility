@@ -44,13 +44,16 @@ module.exports = ({ config }) => ({
       // HTTPS-only app → no non-exempt encryption (skips export-compliance hold).
       ITSAppUsesNonExemptEncryption: false,
     },
-    entitlements: {
-      // Ride offers are delivered with interruption-level "time-sensitive" —
-      // iOS requires this entitlement for the level to be honored. This is
-      // NOT the Critical Alerts entitlement; silent mode / Focus behavior is
-      // respected within Apple's rules.
-      'com.apple.developer.usernotifications.time-sensitive': true,
-    },
+    // TIME-SENSITIVE NOTIFICATIONS — currently DISABLED in the build.
+    // The provisioning profile lacks the capability and EAS can only sync
+    // App ID capabilities during an INTERACTIVE `eas build` (Apple ID login);
+    // both non-interactive builds failed on it. Ride pushes already send
+    // interruptionLevel=timeSensitive — iOS silently treats it as a normal
+    // alert until the entitlement ships. To enable: run `eas build -p ios
+    // --profile production` once interactively (or toggle "Time Sensitive
+    // Notifications" on com.takememobility.driver in the developer portal),
+    // then restore:
+    // entitlements: { 'com.apple.developer.usernotifications.time-sensitive': true },
   },
   android: {
     adaptiveIcon: {
