@@ -26,13 +26,31 @@ function getQStash(): Client | null {
   return qstashClient;
 }
 
-function getWorkerUrl(): string | null {
-  const vercelUrl = process.env.NEXT_PUBLIC_VERCEL_URL
-    ?? process.env.VERCEL_URL
-    ?? process.env.VERCEL_PROJECT_PRODUCTION_URL;
-  if (!vercelUrl) return null;
-  const base = vercelUrl.startsWith('http') ? vercelUrl : `https://${vercelUrl}`;
+/**
+ * Where QStash must deliver dispatch events. Pure and exported for tests.
+ *
+ * MUST prefer the canonical public site URL: per-deployment hosts
+ * (VERCEL_URL, e.g. takeme-mobility-xxxx.vercel.app) sit behind Vercel
+ * deployment protection, so QStash POSTs die at the auth wall and never
+ * reach the worker — rides then strand in searching_driver forever because
+ * publishJSON still reported success and the inline fallback was skipped.
+ */
+export function resolveWorkerUrl(env: Record<string, string | undefined>): string | null {
+  const host =
+    env.NEXT_PUBLIC_SITE_URL
+    ?? env.VERCEL_PROJECT_PRODUCTION_URL
+    ?? env.NEXT_PUBLIC_VERCEL_URL
+    ?? env.VERCEL_URL;
+  if (!host) return null;
+  let base = (host.startsWith('http') ? host : `https://${host}`).replace(/\/+$/, '');
+  // The apex 308-redirects every request to www, and a redirected POST loses
+  // QStash deliveries — normalize to the canonical www host.
+  base = base.replace('://takememobility.com', '://www.takememobility.com');
   return `${base}/api/dispatch/worker`;
+}
+
+function getWorkerUrl(): string | null {
+  return resolveWorkerUrl(process.env as Record<string, string | undefined>);
 }
 
 /**

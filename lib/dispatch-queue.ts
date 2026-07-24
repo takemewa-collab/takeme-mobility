@@ -241,6 +241,55 @@ export async function queueRideForDispatch(rideId: string): Promise<void> {
   }
 }
 
+/** Sweep window: rescue rides that have been searching between these bounds. */
+export const SWEEP_MIN_AGE_MS = 45_000; // give the normal QStash chain room first
+export const SWEEP_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Reconciler for stranded searches — the durability net under the QStash
+ * chain. A ride whose dispatch chain died (dropped delivery, crashed worker,
+ * lost queue entry) previously stayed `searching_driver` forever with no
+ * offer, no escalation, and no cancellation. Every cron tick this re-runs
+ * one offer cycle for any searching ride that has no live Redis offer.
+ * dispatchRide's lock makes this safe against a concurrently healthy chain,
+ * and the derived attempt count keeps MAX_ESCALATIONS binding so hopeless
+ * rides still terminate (and release their card hold).
+ */
+export async function sweepStuckSearchingRides(maxRides: number = 5): Promise<{
+  checked: number; swept: number;
+}> {
+  const supabase = createServiceClient();
+  const now = Date.now();
+  const { data: rides } = await supabase
+    .from('rides')
+    .select('id, created_at')
+    .eq('status', 'searching_driver')
+    .gte('created_at', new Date(now - SWEEP_MAX_AGE_MS).toISOString())
+    .lte('created_at', new Date(now - SWEEP_MIN_AGE_MS).toISOString())
+    .order('created_at', { ascending: true })
+    .limit(maxRides);
+
+  let swept = 0;
+  for (const ride of rides ?? []) {
+    const liveOffer = await getDriverOffer(ride.id);
+    if (liveOffer) continue; // an offer window is open — the chain is healthy
+
+    // Attempts already burned = offers actually sent; keeps escalation
+    // bounded without punishing rides whose chain died before any offer.
+    const { count } = await supabase
+      .from('ride_events')
+      .select('id', { count: 'exact', head: true })
+      .eq('ride_id', ride.id)
+      .eq('event_type', 'offer_sent');
+    const attempt = Math.min(count ?? 0, MAX_ESCALATIONS - 1);
+
+    const result = await dispatchRide(ride.id, attempt);
+    console.log(`[dispatch-sweep] ride ${ride.id} (attempt ${attempt}) → ${result.action}`);
+    swept++;
+  }
+  return { checked: rides?.length ?? 0, swept };
+}
+
 /**
  * Process items from Redis queue (cron fallback).
  */

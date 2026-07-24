@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { dispatchRide, handleTimeout, processRedisQueue } from '@/lib/dispatch-queue';
+import { dispatchRide, handleTimeout, processRedisQueue, sweepStuckSearchingRides } from '@/lib/dispatch-queue';
 import { getDispatchQueueLength } from '@/lib/redis';
 import { verifyInternalRequest } from '@/lib/auth/internal-auth';
 
@@ -33,7 +33,10 @@ export async function GET(request: NextRequest) {
 
   try {
     const result = await processRedisQueue(10);
-    return NextResponse.json(result);
+    // Durability net: re-drive searching rides whose dispatch chain died
+    // (e.g. a dropped QStash delivery) so they either match or terminate.
+    const sweep = await sweepStuckSearchingRides();
+    return NextResponse.json({ ...result, sweep });
   } catch (err) {
     console.error('[dispatch-worker] Cron error:', err);
     return NextResponse.json({ error: 'Worker failed' }, { status: 500 });
