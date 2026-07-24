@@ -129,13 +129,19 @@ export async function getOrCreateConnectAccount(userId: string): Promise<string>
   return accountId;
 }
 
+/**
+ * Mint a FRESH single-use Account Link (Stripe links expire and cannot be
+ * reused — never cache these). The HTTPS return/refresh bridges live at
+ * /driver/payout-setup/* and immediately hand control back to the app via
+ * the takeme-driver:// scheme.
+ */
 export async function createOnboardingLink(accountId: string): Promise<string> {
   const base = 'https://www.takememobility.com';
   const link = await stripeRequest('/account_links', {
     account: accountId,
     type: 'account_onboarding',
-    refresh_url: `${base}/driver/connect/refresh`,
-    return_url: `${base}/driver/connect/return`,
+    refresh_url: `${base}/driver/payout-setup/refresh`,
+    return_url: `${base}/driver/payout-setup/return`,
   });
   return link.url as string;
 }

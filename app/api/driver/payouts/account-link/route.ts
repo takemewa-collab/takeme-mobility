@@ -40,21 +40,57 @@ export async function POST(request: NextRequest) {
     }
 
     const body = schema.parse(await request.json());
-    const accountId = await getOrCreateConnectAccount(user.id);
 
-    if (body.mode === 'manage') {
-      const status = await getConnectAccountStatus(accountId);
-      if (!status.detailsSubmitted) {
-        // Can't manage an account that was never onboarded — send them there.
-        const url = await createOnboardingLink(accountId);
-        return NextResponse.json({ url, mode: 'onboard' });
-      }
-      const url = await createExpressLoginLink(accountId);
-      return NextResponse.json({ url, mode: 'manage' });
+    // Safe diagnostics only: driver row id + account id SUFFIX + step
+    // outcomes. Never the Account Link URL, never full identifiers.
+    const tag = `[payout-onboarding] driver=${driver.id}`;
+
+    let accountId: string;
+    try {
+      accountId = await getOrCreateConnectAccount(user.id);
+      console.log(`${tag} account=…${accountId.slice(-6)} ensure=ok`);
+    } catch (createErr) {
+      // The precise root cause the app must surface — most commonly Stripe
+      // Connect not being enabled for the platform account.
+      const message = createErr instanceof Error ? createErr.message : String(createErr);
+      console.error(`${tag} ensure=FAILED reason="${message}"`);
+      const notEnrolled = /sign(ed)? up for connect/i.test(message);
+      return NextResponse.json(
+        {
+          error: notEnrolled
+            ? 'Payouts are not available yet — the platform payout system is still being enabled.'
+            : 'Could not start payout setup. Try again shortly.',
+          code: notEnrolled ? 'connect_not_enabled' : 'account_create_failed',
+        },
+        { status: 503 },
+      );
     }
 
-    const url = await createOnboardingLink(accountId);
-    return NextResponse.json({ url, mode: 'onboard' });
+    try {
+      if (body.mode === 'manage') {
+        const status = await getConnectAccountStatus(accountId);
+        if (!status.detailsSubmitted) {
+          // Can't manage an account that was never onboarded — send them there.
+          const url = await createOnboardingLink(accountId);
+          console.log(`${tag} account=…${accountId.slice(-6)} link=onboard result=ok`);
+          return NextResponse.json({ url, mode: 'onboard' });
+        }
+        const url = await createExpressLoginLink(accountId);
+        console.log(`${tag} account=…${accountId.slice(-6)} link=manage result=ok`);
+        return NextResponse.json({ url, mode: 'manage' });
+      }
+
+      const url = await createOnboardingLink(accountId);
+      console.log(`${tag} account=…${accountId.slice(-6)} link=onboard result=ok`);
+      return NextResponse.json({ url, mode: 'onboard' });
+    } catch (linkErr) {
+      const message = linkErr instanceof Error ? linkErr.message : String(linkErr);
+      console.error(`${tag} account=…${accountId.slice(-6)} link=FAILED reason="${message}"`);
+      return NextResponse.json(
+        { error: 'Could not open payout setup. Try again shortly.', code: 'account_link_failed' },
+        { status: 503 },
+      );
+    }
   } catch (err) {
     if (err instanceof z.ZodError) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 });

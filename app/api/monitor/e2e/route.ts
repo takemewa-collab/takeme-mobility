@@ -86,6 +86,23 @@ export async function GET(request: Request) {
     await runStripeCheck(process.env.STRIPE_SECRET_KEY ?? '');
   }));
 
+  // Step 3b: Stripe CONNECT readiness — driver payouts depend on Connect
+  // being enabled for the platform account. Read-only: lists connected
+  // accounts (limit 1). Fails with Stripe's exact message when the platform
+  // has not signed up for Connect — the precise root cause when driver
+  // payout onboarding cannot create accounts.
+  steps.push(await runStep('stripe_connect_ready', async () => {
+    const key = process.env.STRIPE_SECRET_KEY ?? '';
+    if (!key) throw new Error('STRIPE_SECRET_KEY not set');
+    const res = await fetch('https://api.stripe.com/v1/accounts?limit=1', {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    const data = (await res.json()) as { error?: { message?: string } };
+    if (!res.ok) {
+      throw new Error(data?.error?.message ?? `Stripe accounts list failed (${res.status})`);
+    }
+  }));
+
   // Step 4: Redis write + read + delete
   steps.push(await runStep('redis_write_read_delete', async () => {
     const url = process.env.UPSTASH_REDIS_REST_URL;
