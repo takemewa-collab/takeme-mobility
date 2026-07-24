@@ -123,11 +123,27 @@ export async function releaseDispatchLock(rideId: string): Promise<void> {
   await r.del(`dispatch:lock:${rideId}`);
 }
 
-// ── Driver offer tracking (15s TTL per offer) ────────────────────────────
+// ── Driver offer tracking (offer-timeout TTL per offer) ──────────────────
+//
+// Two keys per live offer:
+//   dispatch:offer:<rideId>          → driverId   (dispatch/timeout source of truth)
+//   dispatch:driver-offer:<driverId> → {rideId, expiresAt}  (reverse index —
+//     lets the driver app restore/poll its current offer and lets dispatch
+//     skip drivers who already hold a live offer from another ride)
 
-export async function setDriverOffer(rideId: string, driverId: string, ttlSec: number = 15): Promise<void> {
+export interface DriverActiveOffer {
+  rideId: string;
+  /** epoch ms, server-authoritative offer expiry */
+  expiresAt: number;
+}
+
+export async function setDriverOffer(rideId: string, driverId: string, ttlSec: number = 30): Promise<void> {
   const r = getRedis();
-  await r.set(`dispatch:offer:${rideId}`, driverId, { ex: ttlSec });
+  const reverse: DriverActiveOffer = { rideId, expiresAt: Date.now() + ttlSec * 1000 };
+  await Promise.all([
+    r.set(`dispatch:offer:${rideId}`, driverId, { ex: ttlSec }),
+    r.set(`dispatch:driver-offer:${driverId}`, JSON.stringify(reverse), { ex: ttlSec }),
+  ]);
 }
 
 export async function getDriverOffer(rideId: string): Promise<string | null> {
@@ -137,7 +153,38 @@ export async function getDriverOffer(rideId: string): Promise<string | null> {
 
 export async function clearDriverOffer(rideId: string): Promise<void> {
   const r = getRedis();
-  await r.del(`dispatch:offer:${rideId}`);
+  const driverId = await r.get<string>(`dispatch:offer:${rideId}`);
+  const deletes = [r.del(`dispatch:offer:${rideId}`)];
+  if (driverId && driverId !== 'declined') {
+    deletes.push(r.del(`dispatch:driver-offer:${driverId}`));
+  }
+  await Promise.all(deletes);
+}
+
+/** Clear only the driver's reverse-index entry (e.g. after an explicit decline). */
+export async function clearDriverOfferForDriver(driverId: string): Promise<void> {
+  const r = getRedis();
+  await r.del(`dispatch:driver-offer:${driverId}`);
+}
+
+/**
+ * The driver's current live offer, if any. Verified against the forward key
+ * so a stale reverse entry (offer re-issued elsewhere) never surfaces.
+ */
+export async function getActiveOfferForDriver(driverId: string): Promise<DriverActiveOffer | null> {
+  const r = getRedis();
+  const raw = await r.get<string>(`dispatch:driver-offer:${driverId}`);
+  if (!raw) return null;
+  let offer: DriverActiveOffer;
+  try {
+    offer = typeof raw === 'string' ? JSON.parse(raw) : (raw as unknown as DriverActiveOffer);
+  } catch {
+    return null;
+  }
+  if (!offer?.rideId || !offer.expiresAt || offer.expiresAt <= Date.now()) return null;
+  const holder = await r.get<string>(`dispatch:offer:${offer.rideId}`);
+  if (holder !== driverId) return null;
+  return offer;
 }
 
 /**
@@ -155,11 +202,18 @@ export async function markOfferDeclined(rideId: string): Promise<boolean> {
 
 // ── Excluded drivers (already offered + timed out for this ride) ─────────
 
+// Exclusion is a COOLDOWN, not a blacklist: long enough that one escalation
+// chain never re-offers a driver who just missed/declined, short enough that
+// later retry rounds within the search window can offer them again (critical
+// in a small market — with one online driver, a 5-min exclusion turned a
+// single missed 15s offer into "No Drivers Available" for every retry).
+export const EXCLUDED_DRIVER_TTL_SEC = 60;
+
 export async function addExcludedDriver(rideId: string, driverId: string): Promise<void> {
   const r = getRedis();
   const key = `dispatch:excluded:${rideId}`;
   await r.sadd(key, driverId);
-  await r.expire(key, 300); // 5 min TTL
+  await r.expire(key, EXCLUDED_DRIVER_TTL_SEC);
 }
 
 export async function getExcludedDrivers(rideId: string): Promise<string[]> {
@@ -173,7 +227,7 @@ export async function cleanupDispatchState(rideId: string): Promise<void> {
   const r = getRedis();
   await Promise.all([
     r.del(`dispatch:lock:${rideId}`),
-    r.del(`dispatch:offer:${rideId}`),
+    clearDriverOffer(rideId), // also removes the driver's reverse-index entry
     r.del(`dispatch:excluded:${rideId}`),
   ]);
 }

@@ -18,7 +18,10 @@ import {
   checkOfferAccepted,
   handleOfferExpiry,
   MAX_ESCALATIONS,
+  OFFER_TIMEOUT_SEC,
+  SEARCH_WINDOW_MS,
 } from '@/lib/dispatch';
+import { diagnoseNoCandidates } from '@/lib/dispatch-diagnostics';
 import { createServiceClient } from '@/lib/supabase/service';
 import {
   acquireDispatchLock,
@@ -53,7 +56,7 @@ export async function dispatchRide(rideId: string, attempt: number = 0): Promise
 
   try {
     // 2. Find candidates (excludes already-timed-out drivers)
-    const { candidates, ride } = await findCandidates(rideId);
+    const { candidates, ride, excluded } = await findCandidates(rideId);
 
     if (!ride) {
       await releaseDispatchLock(rideId);
@@ -61,16 +64,42 @@ export async function dispatchRide(rideId: string, attempt: number = 0): Promise
     }
 
     if (candidates.length === 0) {
-      // No candidates left — check if we should cancel or retry
-      if (attempt >= MAX_ESCALATIONS) {
+      // Diagnose WHY nobody matched — a structured rejection reason per
+      // driver, mirroring every SQL filter. Persist on the first round and
+      // on the final (cancelling) round; paced retries in between only log.
+      const rideAgeMs = Date.now() - new Date(ride.created_at).getTime();
+      const windowExpired = rideAgeMs >= SEARCH_WINDOW_MS;
+      const offersExhausted = attempt >= MAX_ESCALATIONS;
+
+      await diagnoseNoCandidates({
+        rideId,
+        pickupLat: ride.pickup_lat,
+        pickupLng: ride.pickup_lng,
+        vehicleClass: ride.vehicle_class,
+        maxRadiusM: 10000,
+        excludedDriverIds: excluded,
+        attempt,
+        persist: attempt === 0 || windowExpired || offersExhausted,
+      });
+
+      if (windowExpired || offersExhausted) {
         await cancelRideNoDrivers(rideId, attempt);
-        return { action: 'cancelled', rideId, attempt, error: 'No drivers after max escalations' };
+        return {
+          action: 'cancelled',
+          rideId,
+          attempt,
+          error: windowExpired ? 'Search window expired with no eligible driver' : 'No drivers after max escalations',
+        };
       }
-      // Release lock and retry later (maybe new drivers come online)
+
+      // Keep searching: paced retry (NOT instant — instant retries burned
+      // attempts 0→3 within ~6 seconds of ride creation, before the driver's
+      // first location heartbeat could even land). The attempt count is NOT
+      // incremented here; only real offers a driver missed/declined escalate.
       await releaseDispatchLock(rideId);
-      const retried = await publishDispatchEvent(rideId, attempt + 1);
-      if (!retried) await enqueueDispatch(rideId, attempt + 1);
-      return { action: 'escalated', rideId, attempt, error: 'No candidates, retrying' };
+      const retried = await publishDispatchEvent(rideId, attempt, 10);
+      if (!retried) await enqueueDispatch(rideId, attempt);
+      return { action: 'escalated', rideId, attempt, error: 'No candidates, retrying in 10s' };
     }
 
     // 3. Pick best candidate
@@ -79,8 +108,8 @@ export async function dispatchRide(rideId: string, attempt: number = 0): Promise
     // 4. Send offer (Redis key + push notification)
     await offerRideToDriver(rideId, driver, ride);
 
-    // 5. Schedule timeout check in 15 seconds via QStash
-    const scheduled = await scheduleOfferTimeout(rideId, attempt);
+    // 5. Schedule the offer-timeout check via QStash
+    const scheduled = await scheduleOfferTimeout(rideId, attempt, OFFER_TIMEOUT_SEC);
     if (!scheduled) {
       // QStash unavailable — fall back to Redis queue with delay marker
       console.warn(`[dispatch] QStash timeout scheduling failed for ${rideId}, using Redis fallback`);
@@ -155,12 +184,29 @@ async function cancelRideNoDrivers(rideId: string, attempts: number): Promise<vo
   // Move to DLQ for review
   await moveToDLQ(rideId, attempts, 'No driver accepted after max escalations');
 
-  // Cancel ride
-  await supabase
+  // Cancel ride. The column is `cancel_reason` — this update previously wrote
+  // a nonexistent `cancelled_reason` column and failed SILENTLY, leaving the
+  // ride stuck in searching_driver forever while the rider still received a
+  // "No Drivers Available" push: both states at once. The transition is now
+  // verified, and everything below (push, hold release, events) only runs
+  // when THIS call actually performed it — re-sweeps can't duplicate pushes.
+  const { data: cancelled, error: cancelError } = await supabase
     .from('rides')
-    .update({ status: 'cancelled', cancelled_reason: 'no_drivers_available' })
+    .update({ status: 'cancelled', cancel_reason: 'no_drivers_available', cancelled_by: 'system' })
     .eq('id', rideId)
-    .eq('status', 'searching_driver');
+    .eq('status', 'searching_driver')
+    .select('id');
+
+  if (cancelError) {
+    Sentry.captureException(cancelError, { tags: { component: 'dispatch', rideId } });
+    console.error(`[dispatch] FAILED to cancel undispatchable ride ${rideId}:`, cancelError.message);
+    return;
+  }
+  if (!cancelled || cancelled.length === 0) {
+    console.log(`[dispatch] ride ${rideId} already left searching_driver — skipping cancel notification`);
+    await cleanupDispatchState(rideId);
+    return;
+  }
 
   // Release the rider's card hold — no trip happened, nothing may be charged.
   // Best-effort: a Stripe hiccup must not break the cancellation itself.

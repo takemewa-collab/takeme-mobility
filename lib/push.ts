@@ -11,9 +11,12 @@ interface PushMessage {
   title: string;
   body: string;
   data?: Record<string, unknown>;
-  sound?: 'default' | null;
+  /** 'default', null (silent), or a bundled custom sound filename (iOS). */
+  sound?: string | null;
   priority?: 'default' | 'high';
   channelId?: string;
+  /** iOS 15+ interruption level — 'timeSensitive' breaks through Focus where the user permits it. */
+  interruptionLevel?: 'passive' | 'active' | 'timeSensitive';
 }
 
 export async function sendPushNotification(message: PushMessage): Promise<boolean> {
@@ -29,9 +32,10 @@ export async function sendPushNotification(message: PushMessage): Promise<boolea
         title: message.title,
         body: message.body,
         data: message.data ?? {},
-        sound: message.sound ?? 'default',
+        sound: message.sound === undefined ? 'default' : message.sound,
         priority: message.priority ?? 'high',
         channelId: message.channelId ?? 'ride-requests',
+        ...(message.interruptionLevel ? { interruptionLevel: message.interruptionLevel } : {}),
       }),
     });
 
@@ -112,6 +116,13 @@ export async function pushTokenForUser(
   return data?.token ?? null;
 }
 
+/**
+ * Bundled custom alert sound in the driver app (expo-notifications `sounds`
+ * config). Referenced by filename on both platforms; devices running a build
+ * that predates the asset fall back to the default sound.
+ */
+export const RIDE_REQUEST_SOUND = 'ride_request.wav';
+
 // Notification templates
 export function rideRequestNotification(pushToken: string, rideData: {
   rideId: string;
@@ -120,6 +131,12 @@ export function rideRequestNotification(pushToken: string, rideData: {
   estimatedFare: number;
   distanceKm: number;
   durationMin?: number;
+  pickupLat?: number;
+  pickupLng?: number;
+  /** Driver's straight-line distance to the pickup at offer time. */
+  pickupDistanceM?: number;
+  /** Server-authoritative offer expiry (epoch ms) — drives the in-app countdown. */
+  expiresAt?: number;
   /** Rider selected Pet Friendly — the driver must see this before accepting. */
   petFriendly?: boolean;
 }): PushMessage {
@@ -135,10 +152,16 @@ export function rideRequestNotification(pushToken: string, rideData: {
       estimatedFare: rideData.estimatedFare,
       distanceKm: rideData.distanceKm,
       ...(rideData.durationMin != null ? { durationMin: rideData.durationMin } : {}),
+      ...(rideData.pickupLat != null ? { pickupLat: rideData.pickupLat } : {}),
+      ...(rideData.pickupLng != null ? { pickupLng: rideData.pickupLng } : {}),
+      ...(rideData.pickupDistanceM != null ? { pickupDistanceM: rideData.pickupDistanceM } : {}),
+      ...(rideData.expiresAt != null ? { expiresAt: rideData.expiresAt } : {}),
       ...(rideData.petFriendly ? { petFriendly: true } : {}),
     },
+    sound: RIDE_REQUEST_SOUND,
     priority: 'high',
     channelId: 'ride-requests',
+    interruptionLevel: 'timeSensitive',
   };
 }
 

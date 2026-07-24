@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createApiClient } from '@/lib/supabase/api';
 import { createServiceClient } from '@/lib/supabase/service';
-import { getDriverOffer, clearDriverOffer, markOfferDeclined, addExcludedDriver } from '@/lib/redis';
+import { getDriverOffer, clearDriverOffer, clearDriverOfferForDriver, markOfferDeclined, addExcludedDriver } from '@/lib/redis';
 import { finalizeAssignment } from '@/lib/dispatch';
 import { assessTripFraud } from '@/lib/fraud';
 import { capturePaymentIntent, cancelPaymentIntent } from '@/lib/stripe';
@@ -203,6 +203,10 @@ export async function PUT(request: NextRequest) {
       }
       await addExcludedDriver(body.rideId, driver.id);
       await markOfferDeclined(body.rideId);
+      // The forward key keeps its declined sentinel for the timeout checker,
+      // but the driver's own offer index clears immediately so their app
+      // stops rendering the offer.
+      await clearDriverOfferForDriver(driver.id);
       await svc.from('ride_events').insert({
         ride_id: body.rideId,
         event_type: 'offer_declined',

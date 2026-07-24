@@ -54,10 +54,16 @@ function getWorkerUrl(): string | null {
 }
 
 /**
- * Publish dispatch event — triggers worker immediately.
- * Called when a new ride is created.
+ * Publish dispatch event — triggers worker immediately, or after
+ * `delaySeconds` when the caller wants a paced retry (e.g. "no candidates
+ * right now, look again in 10s" — instant retries burned through every
+ * escalation attempt within ~6 seconds of ride creation).
  */
-export async function publishDispatchEvent(rideId: string, attempt: number = 0): Promise<boolean> {
+export async function publishDispatchEvent(
+  rideId: string,
+  attempt: number = 0,
+  delaySeconds: number = 0,
+): Promise<boolean> {
   const client = getQStash();
   const url = getWorkerUrl();
   if (!client || !url) return false;
@@ -66,10 +72,11 @@ export async function publishDispatchEvent(rideId: string, attempt: number = 0):
     await client.publishJSON({
       url,
       body: { rideId, attempt, action: 'dispatch' },
+      ...(delaySeconds > 0 ? { delay: delaySeconds } : {}),
       retries: 2,
       headers: { 'Authorization': `Bearer ${process.env.CRON_SECRET ?? ''}` },
     });
-    console.log(`[qstash] Dispatch event → ride ${rideId} (attempt ${attempt})`);
+    console.log(`[qstash] Dispatch event → ride ${rideId} (attempt ${attempt}${delaySeconds > 0 ? `, in ${delaySeconds}s` : ''})`);
     return true;
   } catch (err) {
     console.error('[qstash] Publish failed:', err);
@@ -78,10 +85,15 @@ export async function publishDispatchEvent(rideId: string, attempt: number = 0):
 }
 
 /**
- * Schedule a timeout check — fires 15 seconds after offer is sent.
- * If driver hasn't accepted by then, the worker will escalate.
+ * Schedule the offer-timeout check — fires `timeoutSec` seconds after the
+ * offer is sent (the offer's Redis TTL). If the driver hasn't accepted by
+ * then, the worker escalates.
  */
-export async function scheduleOfferTimeout(rideId: string, attempt: number): Promise<boolean> {
+export async function scheduleOfferTimeout(
+  rideId: string,
+  attempt: number,
+  timeoutSec: number = 30,
+): Promise<boolean> {
   const client = getQStash();
   const url = getWorkerUrl();
   if (!client || !url) return false;
@@ -90,11 +102,11 @@ export async function scheduleOfferTimeout(rideId: string, attempt: number): Pro
     await client.publishJSON({
       url,
       body: { rideId, attempt, action: 'timeout_check' },
-      delay: 15, // 15 seconds
+      delay: timeoutSec,
       retries: 1,
       headers: { 'Authorization': `Bearer ${process.env.CRON_SECRET ?? ''}` },
     });
-    console.log(`[qstash] Timeout scheduled → ride ${rideId} in 15s`);
+    console.log(`[qstash] Timeout scheduled → ride ${rideId} in ${timeoutSec}s`);
     return true;
   } catch (err) {
     console.error('[qstash] Timeout schedule failed:', err);

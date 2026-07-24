@@ -20,11 +20,20 @@ import {
   clearDriverOffer,
   addExcludedDriver,
   getExcludedDrivers,
+  getActiveOfferForDriver,
 } from '@/lib/redis';
 import { sendPushNotification, rideRequestNotification, rideAssignedNotification, pushTokenForDriverRow, pushTokenForUser } from '@/lib/push';
 
-export const OFFER_TIMEOUT_SEC = 15;
+// 30s to notice the alert, read the trip, and tap Accept — 15s was only
+// realistic for a driver already staring at the screen.
+export const OFFER_TIMEOUT_SEC = 30;
 export const MAX_ESCALATIONS = 3;
+/**
+ * How long a ride keeps searching before it fails with a clear, retryable
+ * "no drivers" state. Bounds the WHOLE search in wall-clock time; escalation
+ * attempts only count real offers a driver let expire or declined.
+ */
+export const SEARCH_WINDOW_MS = 120_000;
 
 export interface NearbyDriver {
   driver_id: string;
@@ -83,18 +92,19 @@ export async function findNearbyDrivers(
  */
 export async function findCandidates(rideId: string): Promise<{
   candidates: NearbyDriver[];
-  ride: { id: string; pickup_lat: number; pickup_lng: number; vehicle_class: string; status: string; pickup_address: string; dropoff_address: string; estimated_fare: number; distance_km: number; duration_min: number | null; preferences: StoredRidePreferences } | null;
+  ride: { id: string; pickup_lat: number; pickup_lng: number; vehicle_class: string; status: string; pickup_address: string; dropoff_address: string; estimated_fare: number; distance_km: number; duration_min: number | null; created_at: string; preferences: StoredRidePreferences } | null;
+  excluded: string[];
 }> {
   const supabase = createServiceClient();
 
   const { data: ride } = await supabase
     .from('rides')
-    .select('id, pickup_lat, pickup_lng, vehicle_class, status, pickup_address, dropoff_address, estimated_fare, distance_km, duration_min, preferences')
+    .select('id, pickup_lat, pickup_lng, vehicle_class, status, pickup_address, dropoff_address, estimated_fare, distance_km, duration_min, created_at, preferences')
     .eq('id', rideId)
     .single();
 
   if (!ride || ride.status !== 'searching_driver') {
-    return { candidates: [], ride: null };
+    return { candidates: [], ride: null, excluded: [] };
   }
 
   const preferences: StoredRidePreferences = (ride.preferences ?? {}) as StoredRidePreferences;
@@ -112,6 +122,18 @@ export async function findCandidates(rideId: string): Promise<{
     drivers = await findNearbyDrivers(ride.pickup_lat, ride.pickup_lng, ride.vehicle_class as 'economy' | 'comfort' | 'premium', radius);
     // Filter out excluded drivers
     drivers = drivers.filter(d => !excluded.includes(d.driver_id));
+
+    // Skip drivers already holding a live offer from another ride — two
+    // concurrent searches must never race one driver into two offers.
+    if (drivers.length > 0) {
+      const held = await Promise.all(
+        drivers.map(async d => {
+          const offer = await getActiveOfferForDriver(d.driver_id);
+          return offer !== null && offer.rideId !== rideId;
+        }),
+      );
+      drivers = drivers.filter((_, i) => !held[i]);
+    }
 
     if (needsFlags && drivers.length > 0) {
       // Annotate preference flags via the service client (the RPC stays
@@ -147,7 +169,7 @@ export async function findCandidates(rideId: string): Promise<{
     }
   }
 
-  return { candidates: drivers, ride: { ...ride, preferences } };
+  return { candidates: drivers, ride: { ...ride, preferences }, excluded };
 }
 
 /**
@@ -199,10 +221,12 @@ async function annotatePreferenceFlags(candidates: NearbyDriver[]): Promise<Near
 export async function offerRideToDriver(
   rideId: string,
   driver: NearbyDriver,
-  ride: { pickup_address: string; dropoff_address: string; estimated_fare: number; distance_km: number; duration_min?: number | null; preferences?: StoredRidePreferences | null },
+  ride: { pickup_address: string; dropoff_address: string; estimated_fare: number; distance_km: number; duration_min?: number | null; pickup_lat?: number; pickup_lng?: number; preferences?: StoredRidePreferences | null },
 ): Promise<boolean> {
-  // Set offer in Redis (15s TTL — auto-expires if driver doesn't respond)
+  // Set offer in Redis (auto-expires if driver doesn't respond). The reverse
+  // index written alongside is what GET /api/driver/offer serves.
   await setDriverOffer(rideId, driver.driver_id, OFFER_TIMEOUT_SEC);
+  const expiresAt = Date.now() + OFFER_TIMEOUT_SEC * 1000;
 
   const petFriendly = ride.preferences?.pet_friendly === true;
 
@@ -210,19 +234,25 @@ export async function offerRideToDriver(
   // The pet_friendly flag rides along so the driver sees it BEFORE accepting.
   const supabase = createServiceClient();
   const offerToken = await pushTokenForDriverRow(driver.driver_id);
+  let pushDelivered = false;
   if (offerToken) {
-    await sendPushNotification(rideRequestNotification(offerToken, {
+    pushDelivered = await sendPushNotification(rideRequestNotification(offerToken, {
       rideId,
       pickupAddress: ride.pickup_address,
       dropoffAddress: ride.dropoff_address,
       estimatedFare: Number(ride.estimated_fare),
       distanceKm: Number(ride.distance_km),
       durationMin: ride.duration_min == null ? undefined : Number(ride.duration_min),
+      pickupLat: ride.pickup_lat,
+      pickupLng: ride.pickup_lng,
+      pickupDistanceM: Math.round(driver.distance_m),
+      expiresAt,
       petFriendly,
     }));
   }
 
-  // Log the offer
+  // Log the offer — including whether the push provider accepted it, so a
+  // silent driver device is distinguishable from a missing offer.
   await supabase.from('ride_events').insert({
     ride_id: rideId,
     event_type: 'offer_sent',
@@ -232,11 +262,14 @@ export async function offerRideToDriver(
       driver_name: driver.driver_name,
       distance_m: driver.distance_m,
       timeout_sec: OFFER_TIMEOUT_SEC,
+      expires_at: new Date(expiresAt).toISOString(),
+      push_token_present: offerToken !== null,
+      push_provider_accepted: pushDelivered,
       ...(petFriendly ? { pet_friendly: true } : {}),
     },
   });
 
-  console.log(`[dispatch] Offered ride ${rideId} to ${driver.driver_name} (${Math.round(driver.distance_m)}m away, ${OFFER_TIMEOUT_SEC}s timeout)`);
+  console.log(`[dispatch] Offered ride ${rideId} to ${driver.driver_name} (${Math.round(driver.distance_m)}m away, ${OFFER_TIMEOUT_SEC}s timeout, push=${pushDelivered})`);
   return true;
 }
 
@@ -363,13 +396,15 @@ export async function finalizeAssignment(rideId: string, driverId: string): Prom
         .eq('id', rideId)
         .single();
       if (ride) {
-        await sendPushNotification(rideRequestNotification(driverToken, {
-          rideId,
-          pickupAddress: ride.pickup_address,
-          dropoffAddress: ride.dropoff_address,
-          estimatedFare: Number(ride.estimated_fare),
-          distanceKm: Number(ride.distance_km ?? 0),
-        }));
+        // A plain confirmation — NOT a ride_request payload, which would
+        // re-trigger the full-screen offer alert on the driver device.
+        await sendPushNotification({
+          to: driverToken,
+          title: 'Ride confirmed',
+          body: `Head to ${ride.pickup_address}`,
+          data: { type: 'ride_confirmed', rideId },
+          priority: 'high',
+        });
         const riderToken = ride.rider_id ? await pushTokenForUser(ride.rider_id, 'rider') : null;
         if (riderToken) {
           // ETA only when we can compute it from the driver's real position —
