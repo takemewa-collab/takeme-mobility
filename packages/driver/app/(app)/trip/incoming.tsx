@@ -19,7 +19,7 @@ import { spacing, borderRadius } from '@/theme/spacing';
  */
 export default function IncomingRideScreen() {
   const router = useRouter();
-  const { activeTrip, clearTrip, apiClient, incomingOffer, setIncomingOffer } = useTrip();
+  const { activeTrip, clearTrip, apiClient, incomingOffer, setIncomingOffer, refreshTrip } = useTrip();
   const [accepting, setAccepting] = useState(false);
   const [rejecting, setRejecting] = useState(false);
 
@@ -88,6 +88,8 @@ export default function IncomingRideScreen() {
     try {
       await apiClient.put(API.DRIVER_RIDES, { rideId, action: 'accept' });
       setIncomingOffer(null);
+      // Load the now-assigned ride immediately instead of waiting on realtime.
+      void refreshTrip();
       router.replace('/(app)/trip/navigate');
     } catch {
       Alert.alert(
