@@ -86,20 +86,68 @@ export async function GET(request: Request) {
     await runStripeCheck(process.env.STRIPE_SECRET_KEY ?? '');
   }));
 
-  // Step 3b: Stripe CONNECT readiness — driver payouts depend on Connect
-  // being enabled for the platform account. Read-only: lists connected
-  // accounts (limit 1). Fails with Stripe's exact message when the platform
-  // has not signed up for Connect — the precise root cause when driver
-  // payout onboarding cannot create accounts.
+  // Step 3b: Stripe CONNECT readiness — exercises the EXACT driver payout
+  // onboarding server path: (a) Connect enabled (list accounts), (b) Express
+  // account creation (a dedicated probe account, created once and remembered
+  // in Redis — never a real driver's), (c) Account Link minting against the
+  // live bridge URLs. Any failure here is the root cause of "Cash Out
+  // onboarding does not open" before a driver ever sees a URL.
   steps.push(await runStep('stripe_connect_ready', async () => {
     const key = process.env.STRIPE_SECRET_KEY ?? '';
     if (!key) throw new Error('STRIPE_SECRET_KEY not set');
-    const res = await fetch('https://api.stripe.com/v1/accounts?limit=1', {
-      headers: { Authorization: `Bearer ${key}` },
+    const headers = {
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    };
+
+    // (a) Connect enabled?
+    const list = await fetch('https://api.stripe.com/v1/accounts?limit=1', { headers });
+    const listData = (await list.json()) as { error?: { message?: string } };
+    if (!list.ok) {
+      throw new Error(listData?.error?.message ?? `Stripe accounts list failed (${list.status})`);
+    }
+
+    // (b) Probe Express account (created once, id kept in Redis).
+    const { getRedis } = await import('@/lib/redis');
+    const r = getRedis();
+    const PROBE_KEY = 'monitor:connect-probe-account';
+    let probeAccountId = await r.get<string>(PROBE_KEY);
+    if (!probeAccountId) {
+      const created = await fetch('https://api.stripe.com/v1/accounts', {
+        method: 'POST',
+        headers,
+        body: new URLSearchParams({
+          type: 'express',
+          country: 'US',
+          'capabilities[transfers][requested]': 'true',
+          business_type: 'individual',
+          'settings[payouts][schedule][interval]': 'manual',
+          'metadata[platform]': 'takeme_monitor_probe',
+        }).toString(),
+      });
+      const createdData = (await created.json()) as { id?: string; error?: { message?: string } };
+      if (!created.ok || !createdData.id) {
+        throw new Error(`account create: ${createdData?.error?.message ?? created.status}`);
+      }
+      probeAccountId = createdData.id;
+      await r.set(PROBE_KEY, probeAccountId);
+    }
+
+    // (c) Account Link mint (single-use by design; minted fresh here exactly
+    // as the driver route does).
+    const link = await fetch('https://api.stripe.com/v1/account_links', {
+      method: 'POST',
+      headers,
+      body: new URLSearchParams({
+        account: probeAccountId,
+        type: 'account_onboarding',
+        refresh_url: 'https://www.takememobility.com/driver/payout-setup/refresh',
+        return_url: 'https://www.takememobility.com/driver/payout-setup/return',
+      }).toString(),
     });
-    const data = (await res.json()) as { error?: { message?: string } };
-    if (!res.ok) {
-      throw new Error(data?.error?.message ?? `Stripe accounts list failed (${res.status})`);
+    const linkData = (await link.json()) as { url?: string; error?: { message?: string } };
+    if (!link.ok || !linkData.url) {
+      throw new Error(`account link: ${linkData?.error?.message ?? link.status}`);
     }
   }));
 
