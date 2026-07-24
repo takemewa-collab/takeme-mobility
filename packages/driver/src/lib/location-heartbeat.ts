@@ -31,18 +31,21 @@ export interface HeartbeatPayload {
   lng: number;
   heading?: number;
   speedKmh?: number;
+  accuracyM?: number;
 }
 
 /**
  * API-schema-safe payload from raw device coords: heading is only valid in
  * [0, 360] (iOS reports -1 when unknown), speed only when non-negative
- * (m/s → km/h).
+ * (m/s → km/h), accuracy only when non-negative (feeds the server-side trip
+ * geofence gates).
  */
 export function heartbeatPayload(coords: {
   latitude: number;
   longitude: number;
   heading?: number | null;
   speed?: number | null;
+  accuracy?: number | null;
 }): HeartbeatPayload {
   const payload: HeartbeatPayload = { lat: coords.latitude, lng: coords.longitude };
   if (coords.heading != null && coords.heading >= 0 && coords.heading <= 360) {
@@ -50,6 +53,9 @@ export function heartbeatPayload(coords: {
   }
   if (coords.speed != null && coords.speed >= 0) {
     payload.speedKmh = Math.round(coords.speed * 3.6 * 10) / 10;
+  }
+  if (coords.accuracy != null && coords.accuracy >= 0) {
+    payload.accuracyM = Math.round(coords.accuracy * 10) / 10;
   }
   return payload;
 }

@@ -16,6 +16,8 @@ const requestSchema = z.object({
   lng: z.number().min(-180).max(180),
   heading: z.number().min(0).max(360).optional(),
   speedKmh: z.number().min(0).optional(),
+  /** Horizontal accuracy in meters — used by trip geofence gating. */
+  accuracyM: z.number().min(0).max(10000).optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -53,6 +55,7 @@ export async function POST(request: NextRequest) {
       p_lng: body.lng,
       p_heading: body.heading ?? null,
       p_speed_kmh: body.speedKmh ?? null,
+      p_accuracy_m: body.accuracyM ?? null,
     });
 
     if (error) {

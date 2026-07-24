@@ -8,6 +8,9 @@ import { AirportContextCard } from '@/components/airport-context-card';
 import { Button } from '@/components/ui';
 import { PetFriendlyCard } from '@/components/pet-friendly-card';
 import { TripMap } from '@/components/trip-map';
+import { useProximityGate } from '@/hooks/use-proximity-gate';
+import { useRouteEta } from '@/hooks/use-route-eta';
+import { DROPOFF_RADIUS_M, proximityHint } from '@/lib/route-eta';
 import { useDriverStatus } from '@/providers/driver-status';
 import { useTrip } from '@/providers/trip';
 import { colors } from '@/theme/colors';
@@ -27,7 +30,7 @@ const pointLabel = (p: RoutePoint) => p.place_name ?? p.formatted_address;
 export default function ActiveTripScreen() {
   const router = useRouter();
   const { activeTrip, apiClient, markRoutePoint, refreshTrip } = useTrip();
-  const { location } = useDriverStatus();
+  const { location, locationFix } = useDriverStatus();
   const [elapsed, setElapsed] = useState(0);
   const [completing, setCompleting] = useState(false);
   const [stopActionPending, setStopActionPending] = useState(false);
@@ -92,6 +95,26 @@ export default function ActiveTripScreen() {
     );
   }, [airportContexts, currentTarget]);
 
+  // Real driving route driver → current target: live ETA, remaining distance,
+  // and the polyline the map draws. Refreshes as the driver moves.
+  const route = useRouteEta({
+    apiClient,
+    driver: location,
+    target: mapDropoff,
+    enabled: activeTrip != null,
+  });
+
+  // Complete unlocks only near the FINAL destination on a fresh, accurate
+  // fix — the server enforces the same gate authoritatively.
+  const finalDropoff = useMemo(
+    () =>
+      activeTrip ? { latitude: activeTrip.dropoff_lat, longitude: activeTrip.dropoff_lng } : null,
+    [activeTrip],
+  );
+  const completeGate = useProximityGate(locationFix, finalDropoff, DROPOFF_RADIUS_M);
+  const completeHint =
+    completeGate && !completeGate.allowed ? proximityHint(completeGate, 'destination') : null;
+
   // Rows below the header: everything except the current target, in seq order.
   const otherPoints = useMemo(
     () => itinerary.filter((p) => p.id !== currentTarget?.id),
@@ -111,6 +134,10 @@ export default function ActiveTripScreen() {
       if (err instanceof ApiError && err.status === 409) {
         // A stop is still open (or state moved) — re-sync and re-derive.
         await refreshTrip();
+      } else if (err instanceof ApiError && err.status === 422) {
+        // Server geofence: too far / stale / inaccurate — its message says why.
+        const body = err.body as { error?: string } | null;
+        Alert.alert('Not at the destination yet', body?.error ?? 'Get closer and try again.');
       } else {
         Alert.alert('Error', 'Could not complete trip.');
       }
@@ -164,7 +191,12 @@ export default function ActiveTripScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.mapContainer}>
-        <TripMap driver={location} dropoff={mapDropoff} stops={mapStops} />
+        <TripMap
+          driver={location}
+          dropoff={mapDropoff}
+          stops={mapStops}
+          routeCoords={route?.coords ?? null}
+        />
       </View>
 
       <View style={styles.card}>
@@ -214,9 +246,15 @@ export default function ActiveTripScreen() {
         <View style={styles.stats}>
           <View style={styles.stat}>
             <Text style={styles.statValue}>
-              {activeTrip?.distance_km ? formatDistanceMi(Number(activeTrip.distance_km)) : '...'}
+              {route ? `${route.etaMin} min` : '…'}
             </Text>
-            <Text style={styles.statLabel}>Distance</Text>
+            <Text style={styles.statLabel}>ETA</Text>
+          </View>
+          <View style={styles.stat}>
+            <Text style={styles.statValue}>
+              {route ? formatDistanceMi(route.distanceKm) : '…'}
+            </Text>
+            <Text style={styles.statLabel}>Remaining</Text>
           </View>
           <View style={styles.stat}>
             <Text style={styles.statValue}>
@@ -255,13 +293,18 @@ export default function ActiveTripScreen() {
             </Pressable>
           </>
         ) : (
-          <Button
-            title={completing ? 'Completing...' : 'Complete Trip'}
-            onPress={handleComplete}
-            size="lg"
-            fullWidth
-            disabled={completing || stopActionPending}
-          />
+          <>
+            {completeHint ? <Text style={styles.gateHint}>{completeHint}</Text> : null}
+            <Button
+              title={completing ? 'Completing...' : 'Complete Trip'}
+              onPress={handleComplete}
+              size="lg"
+              fullWidth
+              disabled={
+                completing || stopActionPending || completeGate == null || !completeGate.allowed
+              }
+            />
+          </>
         )}
       </View>
     </SafeAreaView>
@@ -305,6 +348,12 @@ const styles = StyleSheet.create({
   skipButton: { alignSelf: 'center', paddingVertical: spacing.md, paddingHorizontal: spacing.lg },
   skipText: { ...typography.small, color: colors.textMuted },
   skipTextDisabled: { opacity: 0.5 },
+  gateHint: {
+    ...typography.caption,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginBottom: spacing.sm,
+  },
   progressTrack: {
     height: 4, backgroundColor: colors.gray200, borderRadius: 2,
     overflow: 'hidden', marginBottom: spacing.xl,

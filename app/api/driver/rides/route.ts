@@ -6,6 +6,14 @@ import { getDriverOffer, clearDriverOffer, markOfferDeclined, addExcludedDriver 
 import { finalizeAssignment } from '@/lib/dispatch';
 import { assessTripFraud } from '@/lib/fraud';
 import { capturePaymentIntent, cancelPaymentIntent } from '@/lib/stripe';
+import { ACTION_TO_STATUS, VALID_TRANSITIONS } from '@/lib/trip-state';
+import {
+  DROPOFF_RADIUS_M,
+  PICKUP_RADIUS_M,
+  assessProximity,
+  parseGeoPoint,
+  proximityErrorMessage,
+} from '@/lib/trip-geofence';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /api/driver/rides      — get assigned ride for current driver
@@ -98,13 +106,6 @@ export async function GET(request: NextRequest) {
 
 // ── PUT: update ride status ─────────────────────────────────────────────
 
-const VALID_TRANSITIONS: Record<string, string[]> = {
-  driver_assigned:  ['driver_arriving', 'cancelled'],
-  driver_arriving:  ['arrived', 'cancelled'],
-  arrived:          ['in_progress', 'cancelled'],
-  in_progress:      ['completed', 'cancelled'],
-};
-
 const updateSchema = z.object({
   rideId: z.string().uuid(),
   action: z.enum([
@@ -140,15 +141,6 @@ const STOP_FROM: Record<string, string[]> = {
   skip_stop: ['pending', 'arrived'],
 };
 
-const ACTION_TO_STATUS: Record<string, string> = {
-  accept: 'driver_arriving',
-  arriving: 'driver_arriving',
-  arrived: 'arrived',
-  start_trip: 'in_progress',
-  complete: 'completed',
-  cancel: 'cancelled',
-};
-
 export async function PUT(request: NextRequest) {
   try {
     const { supabase, user } = await createApiClient(request);
@@ -170,7 +162,7 @@ export async function PUT(request: NextRequest) {
     // Fetch ride
     const { data: ride } = await svc
       .from('rides')
-      .select('id, status, assigned_driver_id')
+      .select('id, status, assigned_driver_id, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng')
       .eq('id', body.rideId)
       .single();
 
@@ -338,6 +330,45 @@ export async function PUT(request: NextRequest) {
         return NextResponse.json(
           { error: 'Stops remain on the itinerary — continue the trip first.' },
           { status: 409 },
+        );
+      }
+    }
+
+    // ── Server-authoritative geofence gates ──────────────────────────
+    // "Arrived" and "Complete" are trusted transitions (complete captures
+    // the fare and credits earnings), so the driver's LATEST server-known
+    // fix must be fresh, accurate, and inside the radius. The client UI
+    // mirrors these checks, but the server is the authority.
+    if (body.action === 'arrived' || body.action === 'complete') {
+      const { data: fixRow } = await svc
+        .from('driver_locations')
+        .select('location, accuracy_m, updated_at')
+        .eq('driver_id', driver.id)
+        .maybeSingle();
+      const point = parseGeoPoint(fixRow?.location ?? null);
+      const fix =
+        fixRow && point
+          ? {
+              ...point,
+              updatedAt: fixRow.updated_at as string,
+              accuracyM: fixRow.accuracy_m == null ? null : Number(fixRow.accuracy_m),
+            }
+          : null;
+      const target =
+        body.action === 'arrived'
+          ? { lat: Number(ride.pickup_lat), lng: Number(ride.pickup_lng) }
+          : { lat: Number(ride.dropoff_lat), lng: Number(ride.dropoff_lng) };
+      const radiusM = body.action === 'arrived' ? PICKUP_RADIUS_M : DROPOFF_RADIUS_M;
+      const check = assessProximity({ fix, target, radiusM });
+      if (!check.ok) {
+        return NextResponse.json(
+          {
+            error: proximityErrorMessage(check, body.action === 'arrived' ? 'pickup' : 'destination'),
+            code: check.reason,
+            distanceM: check.distanceM,
+            radiusM,
+          },
+          { status: 422 },
         );
       }
     }

@@ -24,6 +24,7 @@ const RATE_LIMITS: Record<string, RateLimitConfig> = {
   'verify-otp': { maxRequests: 5, windowSeconds: 300 },
   'rides-create': { maxRequests: 5, windowSeconds: 600 },
   'driver-location': { maxRequests: 60, windowSeconds: 60 },
+  'driver-route': { maxRequests: 30, windowSeconds: 60 },
   'quotes': { maxRequests: 30, windowSeconds: 60 },
   'airports': { maxRequests: 60, windowSeconds: 60 },
   'default': { maxRequests: 100, windowSeconds: 60 },

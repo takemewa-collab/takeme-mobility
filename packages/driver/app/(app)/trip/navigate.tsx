@@ -1,13 +1,16 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { View, Text, StyleSheet, Alert, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { formatRating, API } from '@takeme/shared';
+import { formatRating, formatDistanceMi, API, ApiError } from '@takeme/shared';
 import { AirportContextCard } from '@/components/airport-context-card';
 import { Button } from '@/components/ui';
 import { PetFriendlyCard } from '@/components/pet-friendly-card';
 import { TripMap } from '@/components/trip-map';
 import { TripMessagesSheet } from '@/components/trip-messages';
+import { useProximityGate } from '@/hooks/use-proximity-gate';
+import { useRouteEta } from '@/hooks/use-route-eta';
+import { PICKUP_RADIUS_M, proximityHint } from '@/lib/route-eta';
 import { useDriverStatus } from '@/providers/driver-status';
 import { useTrip } from '@/providers/trip';
 import { colors } from '@/theme/colors';
@@ -17,7 +20,7 @@ import { spacing, borderRadius } from '@/theme/spacing';
 export default function NavigateScreen() {
   const router = useRouter();
   const { activeTrip, riderInfo, apiClient } = useTrip();
-  const { location } = useDriverStatus();
+  const { location, locationFix } = useDriverStatus();
   const [loading, setLoading] = useState(false);
   const [messagesOpen, setMessagesOpen] = useState(false);
 
@@ -26,6 +29,25 @@ export default function NavigateScreen() {
   // the navigation target needs no change.
   const airportPickup =
     activeTrip?.airport_contexts.find((c) => c.direction === 'airport_pickup') ?? null;
+
+  const pickup = useMemo(
+    () =>
+      activeTrip ? { latitude: activeTrip.pickup_lat, longitude: activeTrip.pickup_lng } : null,
+    [activeTrip],
+  );
+
+  // Real driving route driver → pickup: ETA, remaining distance, polyline.
+  const route = useRouteEta({
+    apiClient,
+    driver: location,
+    target: pickup,
+    enabled: activeTrip != null,
+  });
+
+  // Client mirror of the server geofence: Arrived unlocks inside the pickup
+  // radius on a fresh, accurate fix. The server re-validates regardless.
+  const gate = useProximityGate(locationFix, pickup, PICKUP_RADIUS_M);
+  const gateHint = gate && !gate.allowed ? proximityHint(gate, 'pickup') : null;
 
   const handleArrived = async () => {
     if (!activeTrip || !apiClient || loading) return;
@@ -36,8 +58,14 @@ export default function NavigateScreen() {
         action: 'arrived',
       });
       router.replace('/(app)/trip/arrived');
-    } catch {
-      Alert.alert('Error', 'Could not update status.');
+    } catch (err) {
+      // The server's geofence explains exactly what to fix (too far / stale
+      // / inaccurate) — surface its message rather than a generic error.
+      const message =
+        err instanceof ApiError && typeof (err.body as { error?: string })?.error === 'string'
+          ? (err.body as { error: string }).error
+          : 'Could not update status.';
+      Alert.alert('Not yet', message);
       setLoading(false);
     }
   };
@@ -45,19 +73,14 @@ export default function NavigateScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.mapContainer}>
-        <TripMap
-          driver={location}
-          pickup={
-            activeTrip
-              ? { latitude: activeTrip.pickup_lat, longitude: activeTrip.pickup_lng }
-              : null
-          }
-        />
+        <TripMap driver={location} pickup={pickup} routeCoords={route?.coords ?? null} />
       </View>
 
       <View style={styles.card}>
         <Text style={styles.etaText}>
-          {activeTrip?.duration_min ?? '...'} min to pickup
+          {route
+            ? `${route.etaMin} min · ${formatDistanceMi(route.distanceKm)} to pickup`
+            : 'Calculating route…'}
         </Text>
         <Text style={styles.address}>
           {activeTrip?.pickup_address ?? 'Loading...'}
@@ -85,12 +108,13 @@ export default function NavigateScreen() {
           <Text style={styles.messageLinkText}>Message rider</Text>
         </Pressable>
 
+        {gateHint ? <Text style={styles.gateHint}>{gateHint}</Text> : null}
         <Button
           title={loading ? 'Updating...' : 'Arrived at Pickup'}
           onPress={handleArrived}
           size="lg"
           fullWidth
-          disabled={loading}
+          disabled={loading || gate == null || !gate.allowed}
         />
       </View>
 
@@ -127,4 +151,10 @@ const styles = StyleSheet.create({
   messageLink: { alignSelf: 'flex-start', paddingVertical: 6, marginBottom: 12 },
   messageLinkText: { ...typography.bodyBold, color: colors.text, textDecorationLine: 'underline' },
   riderRating: { ...typography.caption, color: colors.warning, marginTop: 2 },
+  gateHint: {
+    ...typography.caption,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginBottom: spacing.sm,
+  },
 });

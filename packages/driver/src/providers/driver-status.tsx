@@ -23,9 +23,20 @@ const FIRST_FIX_TIMEOUT_MS = 20_000;
 export type LocationPermission = 'undetermined' | 'granted' | 'denied';
 export type LocationStatus = 'idle' | 'locating' | 'available' | 'timeout';
 
+export interface LocationFix {
+  latitude: number;
+  longitude: number;
+  /** When the device produced this fix (ms epoch). */
+  timestampMs: number;
+  /** Horizontal accuracy in meters, when reported. */
+  accuracyM: number | null;
+}
+
 interface DriverStatusState {
   status: DriverStatus;
   location: Coordinates | null;
+  /** The same fix with freshness/accuracy metadata for trip gating. */
+  locationFix: LocationFix | null;
   locationPermission: LocationPermission;
   /** Lifecycle of the current fix attempt — never an endless spinner. */
   locationStatus: LocationStatus;
@@ -55,6 +66,7 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
   const [state, setState] = useState<DriverStatusState>({
     status: 'offline',
     location: null,
+    locationFix: null,
     locationPermission: 'undetermined',
     locationStatus: 'idle',
     isLocationPermitted: false,
@@ -217,6 +229,12 @@ export function DriverStatusProvider({ children }: { children: React.ReactNode }
             setState((prev) => ({
               ...prev,
               location: { latitude: fix.coords.latitude, longitude: fix.coords.longitude },
+              locationFix: {
+                latitude: fix.coords.latitude,
+                longitude: fix.coords.longitude,
+                timestampMs: fix.timestamp ?? Date.now(),
+                accuracyM: fix.coords.accuracy ?? null,
+              },
               locationStatus: 'available',
             }));
             sendHeartbeat(fix.coords);
