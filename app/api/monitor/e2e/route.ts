@@ -121,12 +121,16 @@ export async function GET(request: Request) {
 
   // Previous run's health, read BEFORE this run's rows are inserted.
   // Rows within 10s of the newest row belong to the same (previous) run.
+  // ses_send_email is excluded: health means the CORE checks (auth, DB,
+  // Stripe, Redis). If the alert channel itself is down, treating that as
+  // "unhealthy" would fire a recovery-email attempt every 5 minutes forever;
+  // SES failures stay visible in monitoring_e2e without driving the policy.
   let previousRunHealthy: boolean | null = null;
   try {
     const { data: prevRows } = await sb
       .from('monitoring_e2e')
       .select('step, status, created_at')
-      .not('step', 'in', '("_e2e_synthetic_test","_digest_email_sent")')
+      .not('step', 'in', '("_e2e_synthetic_test","_digest_email_sent","ses_send_email")')
       .order('created_at', { ascending: false })
       .limit(10);
     if (prevRows && prevRows.length > 0) {
