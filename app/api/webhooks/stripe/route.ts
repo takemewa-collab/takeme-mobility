@@ -374,14 +374,46 @@ export async function POST(request: NextRequest) {
       // DRIVER PAYOUTS
       // ════════════════════════════════════════════════════════════════
 
+      // Driver payouts run on CONNECTED accounts (event.account is set) —
+      // this endpoint must be registered in Stripe as a Connect webhook
+      // ("Listen to events on connected accounts") for these to arrive.
+      // The payout profile read also reconciles in-flight payouts directly
+      // against Stripe, so a missing Connect webhook degrades to
+      // reconcile-on-read rather than lost money.
+      case 'payout.created':
+      case 'payout.updated': {
+        const payoutId = obj.id as string;
+        const stripeStatus = String(obj.status ?? '');
+        if (stripeStatus === 'in_transit' || stripeStatus === 'pending') {
+          await supabase
+            .from('driver_payouts')
+            .update({ status: 'in_transit' })
+            .eq('stripe_payout_id', payoutId)
+            .eq('status', 'pending');
+        }
+        break;
+      }
+
       case 'payout.paid': {
         const payoutId = obj.id as string;
         console.log(`[Webhook] Payout paid: ${payoutId}`);
 
-        await supabase
+        const { data: paidRows } = await supabase
           .from('driver_payouts')
           .update({ status: 'paid', completed_at: new Date().toISOString() })
-          .eq('stripe_payout_id', payoutId);
+          .eq('stripe_payout_id', payoutId)
+          .neq('status', 'paid')
+          .select('driver_id, net, amount, destination_brand, destination_last4');
+        const paid = paidRows?.[0];
+        if (paid) {
+          const { notifyDriver } = await import('@/lib/driver-payouts');
+          await notifyDriver(paid.driver_id as string, {
+            category: 'payout',
+            title: 'Payout complete',
+            body: `$${Number(paid.net ?? paid.amount).toFixed(2)} arrived at ${paid.destination_brand ?? 'your account'}${paid.destination_last4 ? ` ••${paid.destination_last4}` : ''}.`,
+            data: { stripePayoutId: payoutId },
+          });
+        }
         break;
       }
 
@@ -390,27 +422,34 @@ export async function POST(request: NextRequest) {
         const reason = (obj.failure_message as string) ?? 'Payout failed';
         console.error(`[Webhook] Payout failed: ${payoutId} — ${reason}`);
 
-        // Get payout record to refund the balance
-        const { data: failedPayout } = await supabase
+        // GUARDED transition: refund exactly once even if reconcile-on-read
+        // or a webhook retry races this handler.
+        const { data: flippedRows } = await supabase
           .from('driver_payouts')
-          .select('driver_id, amount')
+          .update({
+            status: 'failed',
+            failure_reason: reason,
+            completed_at: new Date().toISOString(),
+          })
           .eq('stripe_payout_id', payoutId)
-          .single();
-
-        if (failedPayout) {
-          // Restore funds to wallet
+          .in('status', ['pending', 'in_transit'])
+          .select('id, driver_id, amount');
+        const flipped = flippedRows?.[0];
+        if (flipped) {
           await supabase.rpc('add_driver_earning', {
-            p_driver_id: failedPayout.driver_id,
-            p_amount: failedPayout.amount,
+            p_driver_id: flipped.driver_id,
+            p_amount: flipped.amount,
             p_type: 'adjustment',
-            p_description: `Payout failed — funds returned: ${reason}`,
+            p_description: 'Payout failed — funds returned',
+          });
+          const { notifyDriver } = await import('@/lib/driver-payouts');
+          await notifyDriver(flipped.driver_id as string, {
+            category: 'payout',
+            title: 'Payout failed',
+            body: `Your $${Number(flipped.amount).toFixed(2)} was returned to your balance.`,
+            data: { payoutId: flipped.id },
           });
         }
-
-        await supabase
-          .from('driver_payouts')
-          .update({ status: 'failed', failure_reason: reason })
-          .eq('stripe_payout_id', payoutId);
         break;
       }
 

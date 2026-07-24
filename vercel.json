@@ -26,6 +26,10 @@
     {
       "path": "/api/invariants/metrics/snapshot",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/driver-maintenance",
+      "schedule": "0 16 * * *"
     }
   ]
 }

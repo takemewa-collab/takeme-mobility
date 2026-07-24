@@ -79,6 +79,18 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to update status' }, { status: 500 });
     }
 
+    // Append to the status history — the ONLY raw material for online-hours
+    // metrics. Best-effort: a history hiccup must not break going online.
+    if (driver.status !== body.status) {
+      const { error: historyError } = await svc.from('driver_status_history').insert({
+        driver_id: driver.id,
+        status: body.status,
+      });
+      if (historyError) {
+        console.error('[driver/status] status history insert failed:', historyError.message);
+      }
+    }
+
     return NextResponse.json({ status: body.status, driverId: driver.id });
   } catch (err) {
     console.error('PUT /api/driver/status failed:', err);

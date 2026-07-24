@@ -47,15 +47,27 @@ export async function POST(request: NextRequest) {
     let transferId: string | null = null;
 
     if (body.method === 'takeme_card') {
-      // Instant: move to card balance
-      const newAvailable = Number(wallet.available) - body.amount;
-      const newCard = Number(wallet.card_balance) + body.amount;
-
-      await svc.from('driver_wallets').update({
-        available: newAvailable,
-        card_balance: newCard,
-        updated_at: now,
-      }).eq('driver_id', user.id);
+      // Instant: move to card balance ATOMICALLY (033's guarded single-UPDATE
+      // RPC — the previous read-check-write here was exactly the double-spend
+      // race that migration was written to close).
+      const { error: debitError } = await svc.rpc('debit_driver_wallet', {
+        p_driver_id: user.id,
+        p_amount: body.amount,
+        p_to_card: true,
+      });
+      if (debitError) {
+        const insufficient = debitError.message?.includes('INSUFFICIENT_FUNDS');
+        return NextResponse.json(
+          { error: insufficient ? 'Insufficient balance.' : 'Could not move funds. Try again.' },
+          { status: insufficient ? 400 : 500 },
+        );
+      }
+      const { data: walletAfter } = await svc
+        .from('driver_wallets')
+        .select('available')
+        .eq('driver_id', user.id)
+        .single();
+      const newAvailable = Number(walletAfter?.available ?? 0);
 
       // Log payout
       await svc.from('driver_payouts').insert({
