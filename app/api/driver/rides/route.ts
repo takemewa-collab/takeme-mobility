@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createApiClient } from '@/lib/supabase/api';
 import { createServiceClient } from '@/lib/supabase/service';
-import { getDriverOffer, clearDriverOffer } from '@/lib/redis';
+import { getDriverOffer, clearDriverOffer, markOfferDeclined, addExcludedDriver } from '@/lib/redis';
 import { finalizeAssignment } from '@/lib/dispatch';
 import { assessTripFraud } from '@/lib/fraud';
 import { capturePaymentIntent, cancelPaymentIntent } from '@/lib/stripe';
@@ -109,6 +109,7 @@ const updateSchema = z.object({
   rideId: z.string().uuid(),
   action: z.enum([
     'accept',
+    'decline',
     'arriving',
     'arrived',
     'start_trip',
@@ -190,6 +191,33 @@ export async function PUT(request: NextRequest) {
       }
 
       return NextResponse.json({ status: 'driver_assigned', rideId: body.rideId, driver: result.driver });
+    }
+
+    // ── Special handling for DECLINE (offer-based flow) ──────────────
+    // The driver turns down an offer they hold. The ride is still
+    // `searching_driver`, so this must NOT cancel it: exclude this driver
+    // from re-offers and flip the Redis offer to the declined sentinel. The
+    // already-scheduled timeout callback sees a non-accepted offer at the
+    // 15s mark and escalates to the next candidate as usual.
+    if (body.action === 'decline') {
+      if (ride.status !== 'searching_driver') {
+        // Offer window is over (someone accepted or the ride moved on) —
+        // declining is a harmless no-op for the caller.
+        return NextResponse.json({ status: 'declined', rideId: body.rideId });
+      }
+      const offeredDriverId = await getDriverOffer(body.rideId);
+      if (offeredDriverId && offeredDriverId !== driver.id && offeredDriverId !== 'declined') {
+        return NextResponse.json({ error: 'This ride was offered to another driver' }, { status: 403 });
+      }
+      await addExcludedDriver(body.rideId, driver.id);
+      await markOfferDeclined(body.rideId);
+      await svc.from('ride_events').insert({
+        ride_id: body.rideId,
+        event_type: 'offer_declined',
+        actor: 'driver',
+        metadata: { driver_id: driver.id },
+      });
+      return NextResponse.json({ status: 'declined', rideId: body.rideId });
     }
 
     // For non-accept actions, verify the driver owns the ride

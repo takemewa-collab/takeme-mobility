@@ -119,6 +119,7 @@ export function rideRequestNotification(pushToken: string, rideData: {
   dropoffAddress: string;
   estimatedFare: number;
   distanceKm: number;
+  durationMin?: number;
   /** Rider selected Pet Friendly — the driver must see this before accepting. */
   petFriendly?: boolean;
 }): PushMessage {
@@ -132,6 +133,8 @@ export function rideRequestNotification(pushToken: string, rideData: {
       pickupAddress: rideData.pickupAddress,
       dropoffAddress: rideData.dropoffAddress,
       estimatedFare: rideData.estimatedFare,
+      distanceKm: rideData.distanceKm,
+      ...(rideData.durationMin != null ? { durationMin: rideData.durationMin } : {}),
       ...(rideData.petFriendly ? { petFriendly: true } : {}),
     },
     priority: 'high',

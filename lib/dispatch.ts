@@ -83,13 +83,13 @@ export async function findNearbyDrivers(
  */
 export async function findCandidates(rideId: string): Promise<{
   candidates: NearbyDriver[];
-  ride: { id: string; pickup_lat: number; pickup_lng: number; vehicle_class: string; status: string; pickup_address: string; dropoff_address: string; estimated_fare: number; distance_km: number; preferences: StoredRidePreferences } | null;
+  ride: { id: string; pickup_lat: number; pickup_lng: number; vehicle_class: string; status: string; pickup_address: string; dropoff_address: string; estimated_fare: number; distance_km: number; duration_min: number | null; preferences: StoredRidePreferences } | null;
 }> {
   const supabase = createServiceClient();
 
   const { data: ride } = await supabase
     .from('rides')
-    .select('id, pickup_lat, pickup_lng, vehicle_class, status, pickup_address, dropoff_address, estimated_fare, distance_km, preferences')
+    .select('id, pickup_lat, pickup_lng, vehicle_class, status, pickup_address, dropoff_address, estimated_fare, distance_km, duration_min, preferences')
     .eq('id', rideId)
     .single();
 
@@ -199,7 +199,7 @@ async function annotatePreferenceFlags(candidates: NearbyDriver[]): Promise<Near
 export async function offerRideToDriver(
   rideId: string,
   driver: NearbyDriver,
-  ride: { pickup_address: string; dropoff_address: string; estimated_fare: number; distance_km: number; preferences?: StoredRidePreferences | null },
+  ride: { pickup_address: string; dropoff_address: string; estimated_fare: number; distance_km: number; duration_min?: number | null; preferences?: StoredRidePreferences | null },
 ): Promise<boolean> {
   // Set offer in Redis (15s TTL — auto-expires if driver doesn't respond)
   await setDriverOffer(rideId, driver.driver_id, OFFER_TIMEOUT_SEC);
@@ -217,6 +217,7 @@ export async function offerRideToDriver(
       dropoffAddress: ride.dropoff_address,
       estimatedFare: Number(ride.estimated_fare),
       distanceKm: Number(ride.distance_km),
+      durationMin: ride.duration_min == null ? undefined : Number(ride.duration_min),
       petFriendly,
     }));
   }

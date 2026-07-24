@@ -140,6 +140,19 @@ export async function clearDriverOffer(rideId: string): Promise<void> {
   await r.del(`dispatch:offer:${rideId}`);
 }
 
+/**
+ * Driver explicitly declined the offer. The key must NOT be deleted — a
+ * missing key reads as "accepted" to the timeout checker — so the value is
+ * replaced with a sentinel the accept path can never match. `xx` keeps this a
+ * no-op when the offer already expired; `keepTtl` preserves the original
+ * expiry so the scheduled timeout escalates on its normal cadence.
+ */
+export async function markOfferDeclined(rideId: string): Promise<boolean> {
+  const r = getRedis();
+  const result = await r.set(`dispatch:offer:${rideId}`, 'declined', { xx: true, keepTtl: true });
+  return result === 'OK';
+}
+
 // ── Excluded drivers (already offered + timed out for this ride) ─────────
 
 export async function addExcludedDriver(rideId: string, driverId: string): Promise<void> {

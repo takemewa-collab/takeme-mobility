@@ -6,7 +6,9 @@ export const DISPATCH = {
   SEARCH_RADII_M: [3000, 5000, 10000],
   LOCATION_FRESHNESS_MIN: 5,
   MAX_RESULTS_PER_RADIUS: 10,
-  ACCEPT_TIMEOUT_SEC: 30,
+  // Mirrors OFFER_TIMEOUT_SEC on the server — the Redis offer expires at 15s,
+  // so the in-app countdown must never promise longer.
+  ACCEPT_TIMEOUT_SEC: 15,
   MAX_RETRY_ATTEMPTS: 3,
 } as const;
 
