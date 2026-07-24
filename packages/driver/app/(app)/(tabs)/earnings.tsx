@@ -1,132 +1,177 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, RefreshControl } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { formatCurrency, formatRelativeTime, API } from '@takeme/shared';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { API, ApiError } from '@takeme/shared';
 import { useTrip } from '@/providers/trip';
-import { colors } from '@/theme/colors';
-import { typography } from '@/theme/typography';
-import { spacing, borderRadius } from '@/theme/spacing';
+import { useApiResource } from '@/hooks/use-api-resource';
+import type {
+  EarningsResponse,
+  IncentivesResponse,
+  PayoutExecutionResult,
+  PayoutsResponse,
+} from '@/types/driver-hub';
+import { EarningsScreenView } from '@/screens/earnings-screen';
+import { CashOutSheet } from '@/screens/cash-out-sheet';
+import { runPayoutSetup, type PayoutSetupOutcome } from '@/lib/payout-setup';
 
-interface WalletData {
-  available: number;
-  pending: number;
-  lifetime: number;
-}
-
-interface Transaction {
-  id: string;
-  type: string;
-  amount: number;
-  description: string;
-  created_at: string;
-}
-
-export default function EarningsScreen() {
+/**
+ * Earnings tab container: wires the API to the presentational screen.
+ * All aggregation happens server-side; this file only manages query inputs
+ * (week anchor), the cash-out sheet, and refetch policy.
+ */
+export default function EarningsTab() {
+  const router = useRouter();
   const { apiClient } = useTrip();
-  const [wallet, setWallet] = useState<WalletData>({ available: 0, pending: 0, lifetime: 0 });
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
 
-  const fetchEarnings = useCallback(async () => {
-    if (!apiClient) return;
-    try {
-      const data = await apiClient.get<{
-        wallet?: WalletData;
-        transactions?: Transaction[];
-      }>(API.DRIVER_DASHBOARD);
-      if (data.wallet) setWallet(data.wallet);
-      if (data.transactions) setTransactions(data.transactions);
-    } catch {
-      // fail silently
-    } finally {
-      setRefreshing(false);
-    }
+  const tz = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
+  const [anchor, setAnchor] = useState<string | null>(null);
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  const earningsFetcher = useMemo(() => {
+    if (!apiClient) return null;
+    const params: Record<string, string> = { tz };
+    if (anchor) params.anchor = anchor;
+    return () => apiClient.get<EarningsResponse>(API.DRIVER_EARNINGS, params);
+  }, [apiClient, tz, anchor]);
+  const earnings = useApiResource(earningsFetcher);
+
+  const payoutsFetcher = useMemo(() => {
+    if (!apiClient) return null;
+    return () => apiClient.get<PayoutsResponse>(API.DRIVER_PAYOUTS);
   }, [apiClient]);
+  const payouts = useApiResource(payoutsFetcher);
 
-  useEffect(() => { fetchEarnings(); }, [fetchEarnings]);
+  const incentivesFetcher = useMemo(() => {
+    if (!apiClient) return null;
+    return () => apiClient.get<IncentivesResponse>(API.DRIVER_INCENTIVES);
+  }, [apiClient]);
+  const incentives = useApiResource(incentivesFetcher);
 
-  const onRefresh = () => { setRefreshing(true); fetchEarnings(); };
+  // Payout/connect state can change outside the app (Stripe onboarding in a
+  // browser) — re-fetch whenever the tab regains focus. Skip the very first
+  // focus: the mount fetch already covers it.
+  const firstFocusRef = useRef(true);
+  const reloadPayouts = payouts.reload;
+  useFocusEffect(
+    useCallback(() => {
+      if (firstFocusRef.current) {
+        firstFocusRef.current = false;
+        return;
+      }
+      reloadPayouts();
+      console.log('[payout-setup] status=refetched (tab focus)');
+    }, [reloadPayouts]),
+  );
+
+  const handlePrevWeek = useCallback(() => {
+    const prev = earnings.data?.nav.prevAnchor;
+    if (prev) {
+      setSelectedDay(null);
+      setAnchor(prev);
+    }
+  }, [earnings.data]);
+
+  const handleNextWeek = useCallback(() => {
+    const next = earnings.data?.nav.nextAnchor;
+    if (next) {
+      setSelectedDay(null);
+      setAnchor(next);
+    }
+  }, [earnings.data]);
+
+  const handleRefresh = useCallback(() => {
+    earnings.refresh();
+    payouts.reload();
+    incentives.reload();
+  }, [earnings, payouts, incentives]);
+
+  const handleRetry = useCallback(() => {
+    earnings.reload();
+    payouts.reload();
+    incentives.reload();
+  }, [earnings, payouts, incentives]);
+
+  const submitPayout = useCallback(
+    async (
+      amountUsd: number,
+      speed: 'instant' | 'standard',
+      idempotencyKey: string,
+    ): Promise<PayoutExecutionResult> => {
+      if (!apiClient) throw new Error('API unavailable');
+      try {
+        return await apiClient.post<PayoutExecutionResult>(API.DRIVER_PAYOUTS, {
+          amountUsd,
+          speed,
+          idempotencyKey,
+        });
+      } catch (err) {
+        // 422 carries the full result shape (ok:false + failureReason) — that
+        // is an ANSWER, not a transport failure.
+        if (
+          err instanceof ApiError &&
+          err.status === 422 &&
+          err.body != null &&
+          typeof err.body === 'object' &&
+          'ok' in (err.body as Record<string, unknown>)
+        ) {
+          return err.body as PayoutExecutionResult;
+        }
+        throw err;
+      }
+    },
+    [apiClient],
+  );
+
+  const openAccountLink = useCallback(
+    async (mode: 'onboard' | 'manage'): Promise<PayoutSetupOutcome> => {
+      if (!apiClient) {
+        return {
+          ok: false,
+          error: { code: 'network', message: "Couldn't reach TAKEME. Check your connection." },
+        };
+      }
+      const outcome = await runPayoutSetup(apiClient, mode);
+      // Whatever happened in the browser, the server is the truth now.
+      payouts.reload();
+      console.log('[payout-setup] status=refetched');
+      return outcome;
+    },
+    [apiClient, payouts],
+  );
+
+  const handlePayoutCompleted = useCallback(() => {
+    payouts.reload();
+    earnings.reload();
+  }, [payouts, earnings]);
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView
-        contentContainerStyle={styles.scroll}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-      >
-        <Text style={styles.header}>Earnings</Text>
-
-        <View style={styles.balanceCard}>
-          <Text style={styles.balanceLabel}>Available Balance</Text>
-          <Text style={styles.balanceAmount}>{formatCurrency(wallet.available)}</Text>
-          <View style={styles.balanceRow}>
-            <View style={styles.balanceStat}>
-              <Text style={styles.statAmount}>{formatCurrency(wallet.pending)}</Text>
-              <Text style={styles.statLabel}>Pending</Text>
-            </View>
-            <View style={styles.balanceDivider} />
-            <View style={styles.balanceStat}>
-              <Text style={styles.statAmount}>{formatCurrency(wallet.lifetime)}</Text>
-              <Text style={styles.statLabel}>Lifetime</Text>
-            </View>
-          </View>
-        </View>
-
-        <Text style={styles.sectionTitle}>Recent Activity</Text>
-        {transactions.length === 0 ? (
-          <View style={styles.emptyActivity}>
-            <Text style={styles.emptyText}>Your earnings activity will appear here</Text>
-          </View>
-        ) : (
-          transactions.map((tx) => (
-            <View key={tx.id} style={styles.txCard}>
-              <View style={styles.txRow}>
-                <Text style={styles.txDesc} numberOfLines={1}>{tx.description}</Text>
-                <Text style={[styles.txAmount, tx.type === 'payout' && { color: colors.error }]}>
-                  {tx.type === 'payout' ? '-' : '+'}{formatCurrency(tx.amount)}
-                </Text>
-              </View>
-              <Text style={styles.txDate}>{formatRelativeTime(tx.created_at)}</Text>
-            </View>
-          ))
-        )}
-      </ScrollView>
-    </SafeAreaView>
+    <>
+      <EarningsScreenView
+        phase={earnings.phase}
+        earnings={earnings.data}
+        payouts={payouts.data}
+        incentives={incentives.data?.programs ?? []}
+        weekFetching={earnings.fetching && earnings.data != null}
+        refreshing={earnings.refreshing}
+        onRefresh={handleRefresh}
+        onRetry={handleRetry}
+        onPrevWeek={handlePrevWeek}
+        onNextWeek={handleNextWeek}
+        selectedDay={selectedDay}
+        onSelectDay={setSelectedDay}
+        onOpenCashOut={() => setSheetOpen(true)}
+        onViewDayTrips={() => router.push('/(app)/(tabs)/trips')}
+      />
+      <CashOutSheet
+        visible={sheetOpen}
+        onClose={() => setSheetOpen(false)}
+        payouts={payouts.data}
+        payoutsPhase={payouts.phase}
+        onRetryPayouts={payouts.reload}
+        onSubmit={submitPayout}
+        onOpenAccountLink={openAccountLink}
+        onCompleted={handlePayoutCompleted}
+      />
+    </>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  scroll: { paddingBottom: spacing['5xl'] },
-  header: {
-    ...typography.h2, color: colors.text,
-    paddingHorizontal: spacing['2xl'], paddingTop: spacing.lg, paddingBottom: spacing.xl,
-  },
-  balanceCard: {
-    marginHorizontal: spacing['2xl'], padding: spacing.xl,
-    backgroundColor: colors.primary, borderRadius: borderRadius.lg, marginBottom: spacing['3xl'],
-  },
-  balanceLabel: { ...typography.caption, color: colors.gray400 },
-  balanceAmount: { ...typography.h1, color: colors.white, marginTop: spacing.xs },
-  balanceRow: {
-    flexDirection: 'row', marginTop: spacing.xl,
-    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.gray700, paddingTop: spacing.lg,
-  },
-  balanceStat: { flex: 1, alignItems: 'center' },
-  balanceDivider: { width: StyleSheet.hairlineWidth, backgroundColor: colors.gray700 },
-  statAmount: { ...typography.bodyBold, color: colors.white },
-  statLabel: { ...typography.small, color: colors.gray400, marginTop: 4 },
-  sectionTitle: {
-    ...typography.captionBold, color: colors.textMuted, textTransform: 'uppercase',
-    letterSpacing: 0.5, paddingHorizontal: spacing['2xl'], marginBottom: spacing.md,
-  },
-  emptyActivity: { marginHorizontal: spacing['2xl'], padding: spacing['3xl'], alignItems: 'center' },
-  emptyText: { ...typography.body, color: colors.textMuted, textAlign: 'center' },
-  txCard: {
-    marginHorizontal: spacing['2xl'], paddingVertical: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border,
-  },
-  txRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  txDesc: { ...typography.body, color: colors.text, flex: 1, marginRight: spacing.md },
-  txAmount: { ...typography.bodyBold, color: colors.accent },
-  txDate: { ...typography.small, color: colors.textMuted, marginTop: 4 },
-});

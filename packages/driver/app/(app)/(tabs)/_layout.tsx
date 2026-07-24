@@ -1,4 +1,5 @@
 import React from 'react';
+import { StyleSheet } from 'react-native';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -21,10 +22,13 @@ export default function DriverTabLayout() {
         headerShown: false,
         tabBarActiveTintColor: colors.text,
         tabBarInactiveTintColor: colors.gray400,
+        // Edge-to-edge bar: full width, anchored to the bottom, solid white
+        // with a top hairline; the home-indicator safe area lives INSIDE the
+        // bar so nothing ever peeks out beneath it.
         tabBarStyle: {
           backgroundColor: colors.white,
           borderTopColor: colors.border,
-          borderTopWidth: 1,
+          borderTopWidth: StyleSheet.hairlineWidth,
           height: 56 + insets.bottom,
           paddingBottom: Math.max(insets.bottom, 8),
           paddingTop: 6,
@@ -39,6 +43,14 @@ export default function DriverTabLayout() {
       <Tabs.Screen
         name="earnings"
         options={{ title: 'Earnings', tabBarIcon: icon('wallet', 'wallet-outline') }}
+      />
+      <Tabs.Screen
+        name="trips"
+        options={{ title: 'Trips', tabBarIcon: icon('car', 'car-outline') }}
+      />
+      <Tabs.Screen
+        name="schedule"
+        options={{ title: 'Schedule', tabBarIcon: icon('calendar', 'calendar-outline') }}
       />
       <Tabs.Screen
         name="account"

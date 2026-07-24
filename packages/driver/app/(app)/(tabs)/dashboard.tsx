@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Switch, Text, View, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import { Ionicons } from '@expo/vector-icons';
 import { formatCurrency, API } from '@takeme/shared';
@@ -41,6 +41,28 @@ export default function DashboardScreen() {
   const { state: onboardingState } = useOnboarding();
 
   const [wallet, setWallet] = useState<WalletSummary | null>(null);
+
+  // Real unread count from the notification center; null until it loads (the
+  // badge renders only from server truth). Re-polled every time this tab
+  // gains focus.
+  const [unreadCount, setUnreadCount] = useState<number | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      if (!apiClient) return;
+      let alive = true;
+      apiClient
+        .get<{ unreadCount?: number }>(API.DRIVER_NOTIFICATIONS, { limit: '1' })
+        .then((res) => {
+          if (alive && typeof res.unreadCount === 'number') setUnreadCount(res.unreadCount);
+        })
+        .catch(() => {
+          // Badge simply doesn't update; the bell still opens the center.
+        });
+      return () => {
+        alive = false;
+      };
+    }, [apiClient]),
+  );
 
   const isOnline = status === 'available' || status === 'busy' || status === 'on_trip';
 
@@ -183,6 +205,29 @@ export default function DashboardScreen() {
             accessibilityLabel={isOnline ? 'Go offline' : 'Go online'}
           />
         </View>
+
+        {/* Notification bell — real unread count only. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={
+            unreadCount != null && unreadCount > 0
+              ? `Notifications, ${unreadCount} unread`
+              : 'Notifications'
+          }
+          onPress={() => router.push('/(app)/notifications')}
+          style={({ pressed }) => [
+            styles.bellButton,
+            { top: insets.top + spacing.md },
+            pressed && { opacity: 0.8 },
+          ]}
+        >
+          <Ionicons name="notifications-outline" size={22} color={colors.text} />
+          {unreadCount != null && unreadCount > 0 ? (
+            <View style={styles.bellBadge}>
+              <Text style={styles.bellBadgeText}>{unreadCount > 99 ? '99+' : unreadCount}</Text>
+            </View>
+          ) : null}
+        </Pressable>
       </View>
 
       <View style={styles.sheet}>
@@ -305,6 +350,31 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
+  bellButton: {
+    position: 'absolute',
+    right: spacing.xl,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bellBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: colors.black,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  bellBadgeText: { ...typography.small, fontSize: 10, lineHeight: 12, fontWeight: '700', color: colors.white },
   statusPillText: { ...typography.bodyBold, color: colors.text, marginRight: spacing.xs },
   sheet: {
     backgroundColor: colors.white,
