@@ -280,6 +280,22 @@ interface TripContextValue extends TripState {
 
 const TripContext = createContext<TripContextValue | null>(null);
 
+// Module-level presentation guard for incoming offers: which offer (ride id
+// + expiry window) has already been presented (screen pushed + acks sent).
+// Lives OUTSIDE React on purpose — it must survive both effect re-runs and
+// provider remounts. A legitimate RE-offer of the same ride (after the
+// dispatch cooldown) carries a new expiry window and presents again; the
+// 2s tolerance absorbs the sub-second drift between the push payload's
+// expiresAt and the server's authoritative one.
+let presentedOfferRideId: string | null = null;
+let presentedOfferExpiresAt = 0;
+
+function isSamePresentation(rideId: string, expiresAt: number): boolean {
+  return (
+    presentedOfferRideId === rideId && Math.abs(presentedOfferExpiresAt - expiresAt) < 2000
+  );
+}
+
 export function TripProvider({ children }: { children: React.ReactNode }) {
   const supabase = useSupabase();
   const { user } = useAuth();
@@ -615,39 +631,67 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     }
   }, [apiClient, user, setIncomingOffer]);
 
-  // Alert + full-screen presentation lifecycle, keyed on the OFFER'S RIDE ID
-  // (not the object — a field-enrichment merge must not restart the sound or
-  // push a second screen). Stops on ANY terminal path; the offer self-expires
-  // on the server-authoritative clock.
+  // Alert + full-screen presentation lifecycle, keyed on the OFFER'S RIDE ID.
+  //
+  // HARD IDEMPOTENCY RULE (live incident, ride 38132b70): this effect cycled
+  // ~2×/second in production — 26 duplicate offer_displayed acks, the sound
+  // restarting each cycle, offer screens stacking. Presentation is therefore
+  // guarded by a MODULE-LEVEL ride id (survives effect re-runs AND provider
+  // remounts): navigation + acks happen at most once per offer, the sound is
+  // a module singleton that auto-stops at the offer's server expiry, and the
+  // effect cleanup no longer tears the alert down (a re-run must be a no-op).
+  // The guard resets only on a MOUNTED offer-clear, so a legitimate re-offer
+  // of the same ride after the cooldown alerts again.
   const offerRideId = incomingOffer?.rideId ?? null;
+  const hadOfferThisInstanceRef = useRef(false);
   useEffect(() => {
     if (!offerRideId) {
-      void stopOfferAlert();
+      // Only a MOUNTED offer-clear (this instance saw the offer end) stops
+      // the alert and resets the guard. A fresh mount that simply hasn't
+      // restored the offer yet must leave a still-valid alert untouched —
+      // tearing it down here is what a remount loop would amplify.
+      if (hadOfferThisInstanceRef.current) {
+        hadOfferThisInstanceRef.current = false;
+        presentedOfferRideId = null;
+        presentedOfferExpiresAt = 0;
+        void stopOfferAlert();
+      }
       return;
     }
-    let cancelled = false;
-    // Enrich a push-sourced offer with server-computed fields right away
-    // (earnings, live pickup distance) — merged without re-alerting.
-    if (incomingOfferRef.current?.estimatedEarnings == null) {
-      void syncOfferFromServer();
-    }
-    (async () => {
-      const soundStarted = await startOfferAlert(offerRideId);
-      if (cancelled || !apiClient) return;
-      // Observability acks — best-effort, never block the alert.
+    hadOfferThisInstanceRef.current = true;
+
+    const expiresAt = incomingOfferRef.current?.expiresAt ?? Date.now();
+    const firstPresentation = !isSamePresentation(offerRideId, expiresAt);
+
+    if (firstPresentation) {
+      presentedOfferRideId = offerRideId;
+      presentedOfferExpiresAt = expiresAt;
+
+      // Enrich a push-sourced offer with server-computed fields (earnings,
+      // live pickup distance) — merged without re-alerting.
+      if (incomingOfferRef.current?.estimatedEarnings == null) {
+        void syncOfferFromServer();
+      }
+
+      router.push('/(app)/trip/incoming');
+
       apiClient
-        .post(API.DRIVER_OFFER, { rideId: offerRideId, event: 'offer_displayed' })
+        ?.post(API.DRIVER_OFFER, { rideId: offerRideId, event: 'offer_displayed' })
         .catch(() => {});
+    }
+
+    // Always ensure the sound is running (restores it after a provider
+    // remount stopped nothing — startOfferAlert is a no-op while this ride
+    // is already alerting, so a spurious effect re-run does nothing).
+    (async () => {
+      const soundStarted = await startOfferAlert(offerRideId, expiresAt);
       if (soundStarted) {
         apiClient
-          .post(API.DRIVER_OFFER, { rideId: offerRideId, event: 'alert_sound_started' })
+          ?.post(API.DRIVER_OFFER, { rideId: offerRideId, event: 'alert_sound_started' })
           .catch(() => {});
       }
     })();
 
-    router.push('/(app)/trip/incoming');
-
-    const expiresAt = incomingOfferRef.current?.expiresAt ?? Date.now();
     const expiry = setTimeout(() => {
       apiClient
         ?.post(API.DRIVER_OFFER, { rideId: offerRideId, event: 'offer_expired_client' })
@@ -656,9 +700,10 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     }, Math.max(0, expiresAt - Date.now()));
 
     return () => {
-      cancelled = true;
+      // Only the timer — never the alert itself; terminal paths (clear,
+      // accept/decline, expiry, sign-out) stop it explicitly, and the
+      // module-level auto-stop bounds it at the offer window regardless.
       clearTimeout(expiry);
-      void stopOfferAlert();
     };
   }, [offerRideId, apiClient, syncOfferFromServer]);
 

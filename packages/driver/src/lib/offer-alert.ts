@@ -29,6 +29,7 @@ const IOS_REVIBRATE_MS = 2400;
 
 let sound: Audio.Sound | null = null;
 let iosVibrateTimer: ReturnType<typeof setInterval> | null = null;
+let autoStopTimer: ReturnType<typeof setTimeout> | null = null;
 let alertingRideId: string | null = null;
 let generation = 0;
 
@@ -52,12 +53,24 @@ export async function setAlertSoundEnabled(enabled: boolean): Promise<void> {
 /**
  * Start the alert for an offer. No-op when this ride is already alerting.
  * Returns whether the sound actually started (for observability acks).
+ *
+ * The alert is a module-level singleton that OWNS its own lifetime: it
+ * auto-stops shortly after `expiresAtMs` no matter what happens to React
+ * component lifecycles, so a remounting provider or a dropped state update
+ * can never leave the sound playing past the offer window.
  */
-export async function startOfferAlert(rideId: string): Promise<boolean> {
+export async function startOfferAlert(rideId: string, expiresAtMs?: number): Promise<boolean> {
   if (alertingRideId === rideId) return false;
   await stopOfferAlert();
   alertingRideId = rideId;
   const myGeneration = ++generation;
+
+  if (expiresAtMs != null) {
+    autoStopTimer = setTimeout(
+      () => void stopOfferAlert(),
+      Math.max(0, expiresAtMs - Date.now()) + 1500,
+    );
+  }
 
   // Vibration starts immediately — it must not wait on audio I/O.
   Vibration.vibrate(VIBRATION_PATTERN, Platform.OS === 'android');
@@ -96,6 +109,10 @@ export async function startOfferAlert(rideId: string): Promise<boolean> {
 export async function stopOfferAlert(): Promise<void> {
   generation += 1;
   alertingRideId = null;
+  if (autoStopTimer) {
+    clearTimeout(autoStopTimer);
+    autoStopTimer = null;
+  }
   Vibration.cancel();
   if (iosVibrateTimer) {
     clearInterval(iosVibrateTimer);

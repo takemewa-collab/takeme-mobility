@@ -15,8 +15,14 @@ interface PushMessage {
   sound?: string | null;
   priority?: 'default' | 'high';
   channelId?: string;
-  /** iOS 15+ interruption level — 'timeSensitive' breaks through Focus where the user permits it. */
-  interruptionLevel?: 'passive' | 'active' | 'timeSensitive';
+  /**
+   * iOS 15+ interruption level — time-sensitive breaks through Focus where
+   * the user permits it. Expo's API enum is HYPHENATED ('time-sensitive');
+   * sending 'timeSensitive' made the API 400 the ENTIRE request — proven live
+   * on ride 38132b70 (offer_sent.push_provider_accepted=false): no driver
+   * push at all, delivery survived only via the app's offer poll.
+   */
+  interruptionLevel?: 'passive' | 'active' | 'time-sensitive';
 }
 
 export async function sendPushNotification(message: PushMessage): Promise<boolean> {
@@ -161,7 +167,7 @@ export function rideRequestNotification(pushToken: string, rideData: {
     sound: RIDE_REQUEST_SOUND,
     priority: 'high',
     channelId: 'ride-requests',
-    interruptionLevel: 'timeSensitive',
+    interruptionLevel: 'time-sensitive',
   };
 }
 
