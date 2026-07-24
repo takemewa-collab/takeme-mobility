@@ -59,3 +59,4 @@ expo-env.d.ts
 
 .vercel
 .claude/
+*.ipa

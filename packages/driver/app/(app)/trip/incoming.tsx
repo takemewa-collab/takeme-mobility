@@ -109,6 +109,19 @@ export default function IncomingRideScreen() {
   useEffect(() => {
     expireRef.current = dismiss;
   });
+
+  // If the provider clears the offer from under us (expiry timer, another
+  // driver took the ride, sign-out) while nothing was tapped, leave rather
+  // than strand the driver on an empty offer shell.
+  const hadOfferRef = useRef(isOffer);
+  useEffect(() => {
+    const hadOffer = hadOfferRef.current;
+    hadOfferRef.current = isOffer;
+    if (hadOffer && !isOffer && !accepting && !rejecting && !activeTrip) {
+      if (router.canGoBack()) router.back();
+      else router.replace('/(app)/(tabs)/dashboard');
+    }
+  }, [isOffer, accepting, rejecting, activeTrip, router]);
   useEffect(() => {
     if (!isOffer) return;
     if (timeLeft <= 0) {
