@@ -28,7 +28,7 @@ export default function ArrivedScreen() {
         action: 'start_trip',
       });
       router.replace('/(app)/trip/active');
-    } catch (err) {
+    } catch {
       Alert.alert('Error', 'Could not start trip.');
       setLoading(false);
     }

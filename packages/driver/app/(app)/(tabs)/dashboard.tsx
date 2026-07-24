@@ -9,7 +9,7 @@ import { TripMap } from '@/components/trip-map';
 import { registerForPush } from '@/lib/register-push';
 import { useDriverStatus } from '@/providers/driver-status';
 import { useOnboarding } from '@/providers/onboarding';
-import { useTrip } from '@/providers/trip';
+import { useTrip, offerFromPushData } from '@/providers/trip';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing, borderRadius } from '@/theme/spacing';
@@ -37,7 +37,7 @@ export default function DashboardScreen() {
     activationBlock,
     clearActivationBlock,
   } = useDriverStatus();
-  const { activeTrip, apiClient } = useTrip();
+  const { activeTrip, apiClient, setIncomingOffer } = useTrip();
   const { state: onboardingState } = useOnboarding();
 
   const [wallet, setWallet] = useState<WalletSummary | null>(null);
@@ -74,16 +74,53 @@ export default function DashboardScreen() {
   }, [activeTrip?.status, router]);
 
   // Register for push once we have an authenticated API client, and route
-  // notification taps to the right surface.
+  // notification taps to the right surface. Ride offers exist ONLY in the
+  // push payload while the ride is still searching (nothing is assigned yet),
+  // so the payload itself seeds the incoming-offer state that /incoming
+  // renders — whether the push was tapped, arrived in the foreground, or
+  // cold-started the app.
   useEffect(() => {
     if (apiClient) registerForPush(apiClient);
-    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
-      const data = response.notification.request.content.data as { type?: string };
-      if (data?.type === 'ride_request') router.push('/(app)/trip/incoming');
+
+    const handleRideRequest = (data: Record<string, unknown> | null | undefined) => {
+      const offer = offerFromPushData(data);
+      if (!offer) return false;
+      setIncomingOffer(offer);
+      router.push('/(app)/trip/incoming');
+      return true;
+    };
+
+    // Tapped from the notification shade (background / killed → resumed).
+    const tapSub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data as Record<string, unknown>;
+      if (handleRideRequest(data)) return;
       if (data?.type === 'onboarding_update') router.push('/onboarding');
     });
-    return () => sub.remove();
-  }, [apiClient, router]);
+
+    // Arrived while the app is open — show the offer immediately; a banner
+    // the driver has to notice and tap would burn most of the 15s window.
+    const receiveSub = Notifications.addNotificationReceivedListener((notification) => {
+      handleRideRequest(notification.request.content.data as Record<string, unknown>);
+    });
+
+    // Cold start from a tapped notification: the listener above registers too
+    // late to see it, but the OS keeps the last response around.
+    Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (!response) return;
+      const data = response.notification.request.content.data as Record<string, unknown>;
+      // Offers older than the accept window are dead — don't show a ghost.
+      // (`date` is epoch seconds on some platforms, ms on others — normalize.)
+      const rawDate = response.notification.date;
+      const sentAt = rawDate && rawDate < 1e12 ? rawDate * 1000 : rawDate;
+      if (sentAt && Date.now() - sentAt > 60_000) return;
+      handleRideRequest(data);
+    });
+
+    return () => {
+      tapSub.remove();
+      receiveSub.remove();
+    };
+  }, [apiClient, router, setIncomingOffer]);
 
   // The server refuses `available` until activation completes; explain and
   // route to the Activation Center rather than surfacing a raw 403.

@@ -182,6 +182,45 @@ function tripReducer(state: TripState, action: TripAction): TripState {
   }
 }
 
+/**
+ * A dispatch OFFER, delivered by push notification while the ride is still
+ * `searching_driver`. It is NOT an assigned trip — the ride has no
+ * assigned_driver_id yet, so the realtime assignment channel can't see it.
+ * The payload mirrors lib/push.ts rideRequestNotification on the server.
+ */
+export interface IncomingOffer {
+  rideId: string;
+  pickupAddress: string;
+  dropoffAddress: string;
+  estimatedFare: number;
+  distanceKm: number | null;
+  durationMin: number | null;
+  petFriendly: boolean;
+  /** When the offer landed on the device — drives the countdown. */
+  receivedAt: number;
+}
+
+/** Parse a push payload into an offer; null when it isn't a ride request. */
+export function offerFromPushData(
+  data: Record<string, unknown> | null | undefined,
+): IncomingOffer | null {
+  if (!data || data.type !== 'ride_request' || typeof data.rideId !== 'string') return null;
+  const num = (v: unknown): number | null => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  return {
+    rideId: data.rideId,
+    pickupAddress: String(data.pickupAddress ?? 'Pickup'),
+    dropoffAddress: String(data.dropoffAddress ?? 'Destination'),
+    estimatedFare: num(data.estimatedFare) ?? 0,
+    distanceKm: num(data.distanceKm),
+    durationMin: num(data.durationMin),
+    petFriendly: data.petFriendly === true,
+    receivedAt: Date.now(),
+  };
+}
+
 interface TripContextValue extends TripState {
   restoreActiveTrip: () => Promise<void>;
   /** Full re-sync from the server — use after a 409 (state moved under us). */
@@ -190,6 +229,9 @@ interface TripContextValue extends TripState {
   markRoutePoint: (pointId: string, status: RoutePointStatus) => void;
   clearTrip: () => void;
   apiClient: ApiClient | null;
+  /** Pending dispatch offer awaiting Accept/Decline (push-delivered). */
+  incomingOffer: IncomingOffer | null;
+  setIncomingOffer: (offer: IncomingOffer | null) => void;
 }
 
 const TripContext = createContext<TripContextValue | null>(null);
@@ -475,6 +517,16 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     }
   }, [user, restoreActiveTrip]);
 
+  // Pending dispatch offer (push-delivered; rides row not yet assigned).
+  const [incomingOffer, setIncomingOffer] = useState<IncomingOffer | null>(null);
+
+  // An accepted/assigned trip supersedes any lingering offer card.
+  useEffect(() => {
+    if (state.activeTrip && incomingOffer?.rideId === state.activeTrip.id) {
+      setIncomingOffer(null);
+    }
+  }, [state.activeTrip, incomingOffer]);
+
   const value = useMemo(
     () => ({
       ...state,
@@ -483,8 +535,10 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
       markRoutePoint,
       clearTrip,
       apiClient,
+      incomingOffer,
+      setIncomingOffer,
     }),
-    [state, restoreActiveTrip, markRoutePoint, clearTrip, apiClient],
+    [state, restoreActiveTrip, markRoutePoint, clearTrip, apiClient, incomingOffer],
   );
 
   return (

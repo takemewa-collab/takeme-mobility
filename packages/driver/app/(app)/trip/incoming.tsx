@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -9,41 +9,73 @@ import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing, borderRadius } from '@/theme/spacing';
 
+/**
+ * Incoming ride surface. Two sources feed it:
+ *  - a dispatch OFFER (push-delivered while the ride is still searching —
+ *    `incomingOffer`): Accept claims it via the accept action, Decline turns
+ *    it down via the decline action (which never cancels the ride);
+ *  - a ride already assigned to this driver (`activeTrip`, realtime) — legacy
+ *    surface kept as a fallback; Accept confirms, Reject cancels.
+ */
 export default function IncomingRideScreen() {
   const router = useRouter();
-  const { activeTrip, clearTrip, apiClient } = useTrip();
-  const [timeLeft, setTimeLeft] = useState<number>(DISPATCH.ACCEPT_TIMEOUT_SEC);
+  const { activeTrip, clearTrip, apiClient, incomingOffer, setIncomingOffer } = useTrip();
   const [accepting, setAccepting] = useState(false);
   const [rejecting, setRejecting] = useState(false);
 
+  const isOffer = incomingOffer != null;
+  const rideId = incomingOffer?.rideId ?? activeTrip?.id ?? null;
+
+  // Offer countdowns start from when the push landed, not when the screen
+  // mounted — a slow tap must not restart the clock.
+  const initialTimeLeft = useMemo(() => {
+    if (!incomingOffer) return DISPATCH.ACCEPT_TIMEOUT_SEC;
+    const elapsedSec = Math.floor((Date.now() - incomingOffer.receivedAt) / 1000);
+    return Math.max(0, DISPATCH.ACCEPT_TIMEOUT_SEC - elapsedSec);
+  }, [incomingOffer]);
+  const [timeLeft, setTimeLeft] = useState<number>(initialTimeLeft);
+
+  const dismiss = () => {
+    setIncomingOffer(null);
+    if (router.canGoBack()) router.back();
+    else router.replace('/(app)/(tabs)/dashboard');
+  };
+
   const handleReject = async () => {
-    if (rejecting) return;
+    if (rejecting || accepting) return;
     setRejecting(true);
     try {
-      if (activeTrip && apiClient) {
-        await apiClient.put(API.DRIVER_RIDES, {
-          rideId: activeTrip.id,
-          action: 'cancel',
-          cancelReason: 'Driver rejected',
-        });
+      if (rideId && apiClient) {
+        if (isOffer) {
+          // Turn down the offer — dispatch escalates to the next driver.
+          await apiClient.put(API.DRIVER_RIDES, { rideId, action: 'decline' });
+        } else if (activeTrip) {
+          await apiClient.put(API.DRIVER_RIDES, {
+            rideId,
+            action: 'cancel',
+            cancelReason: 'Driver rejected',
+          });
+          clearTrip();
+        }
       }
-      clearTrip();
-      router.back();
     } catch {
-      clearTrip();
-      router.back();
+      // Declining is best-effort — the server-side offer timeout escalates
+      // on its own if this call never lands.
+    } finally {
+      setRejecting(false);
+      dismiss();
     }
   };
 
-  // The countdown re-arms every second; the latest handleReject is kept in a
-  // ref so the expiry path never fires a stale closure.
-  const rejectRef = useRef(handleReject);
+  // The countdown re-arms every second; expiry simply dismisses — the server
+  // owns the offer lifecycle and escalates expired offers itself.
+  const expireRef = useRef(dismiss);
   useEffect(() => {
-    rejectRef.current = handleReject;
+    expireRef.current = dismiss;
   });
   useEffect(() => {
     if (timeLeft <= 0) {
-      rejectRef.current();
+      expireRef.current();
       return;
     }
     const timer = setTimeout(() => setTimeLeft((t) => t - 1), 1000);
@@ -51,26 +83,48 @@ export default function IncomingRideScreen() {
   }, [timeLeft]);
 
   const handleAccept = async () => {
-    if (!activeTrip || !apiClient || accepting) return;
+    if (!rideId || !apiClient || accepting) return;
     setAccepting(true);
     try {
-      await apiClient.put(API.DRIVER_RIDES, {
-        rideId: activeTrip.id,
-        action: 'accept',
-      });
+      await apiClient.put(API.DRIVER_RIDES, { rideId, action: 'accept' });
+      setIncomingOffer(null);
       router.replace('/(app)/trip/navigate');
     } catch {
-      Alert.alert('Error', 'Could not accept ride. Please try again.');
+      Alert.alert(
+        'Ride unavailable',
+        'This request expired or went to another driver.',
+        [{ text: 'OK', onPress: dismiss }],
+      );
       setAccepting(false);
     }
   };
 
-  if (!activeTrip) {
+  const view = incomingOffer
+    ? {
+        pickupAddress: incomingOffer.pickupAddress,
+        dropoffAddress: incomingOffer.dropoffAddress,
+        distanceKm: incomingOffer.distanceKm,
+        durationMin: incomingOffer.durationMin,
+        estimatedFare: incomingOffer.estimatedFare,
+        petFriendly: incomingOffer.petFriendly,
+      }
+    : activeTrip
+      ? {
+          pickupAddress: activeTrip.pickup_address,
+          dropoffAddress: activeTrip.dropoff_address,
+          distanceKm: activeTrip.distance_km != null ? Number(activeTrip.distance_km) : null,
+          durationMin: activeTrip.duration_min != null ? Number(activeTrip.duration_min) : null,
+          estimatedFare: Number(activeTrip.estimated_fare ?? 0),
+          petFriendly: activeTrip.preferences.pet_friendly === true,
+        }
+      : null;
+
+  if (!view) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
           <Text style={styles.title}>No incoming ride</Text>
-          <Pressable style={styles.rejectButton} onPress={() => router.back()}>
+          <Pressable style={styles.rejectButton} onPress={dismiss}>
             <Text style={styles.rejectText}>Go back</Text>
           </Pressable>
         </View>
@@ -93,7 +147,7 @@ export default function IncomingRideScreen() {
         {/* Preference badge sits above the ride card so the driver sees it
             before deciding to accept. expo-symbols isn't a dependency, so the
             paw is the text glyph rather than SF Symbol 'pawprint.fill'. */}
-        {activeTrip.preferences.pet_friendly ? (
+        {view.petFriendly ? (
           <View style={styles.petBadge}>
             <Text style={styles.petBadgeTitle}>{'\u{1F43E}'} Pet Friendly trip</Text>
             <Text style={styles.petBadgeSubtitle}>Rider is bringing a household pet.</Text>
@@ -105,7 +159,7 @@ export default function IncomingRideScreen() {
             <View style={[styles.dot, { backgroundColor: colors.accent }]} />
             <View style={styles.locationInfo}>
               <Text style={styles.locationLabel}>Pickup</Text>
-              <Text style={styles.locationAddress}>{activeTrip.pickup_address}</Text>
+              <Text style={styles.locationAddress}>{view.pickupAddress}</Text>
             </View>
           </View>
 
@@ -115,27 +169,25 @@ export default function IncomingRideScreen() {
             <View style={[styles.dot, { backgroundColor: colors.primary }]} />
             <View style={styles.locationInfo}>
               <Text style={styles.locationLabel}>Dropoff</Text>
-              <Text style={styles.locationAddress}>{activeTrip.dropoff_address}</Text>
+              <Text style={styles.locationAddress}>{view.dropoffAddress}</Text>
             </View>
           </View>
 
           <View style={styles.rideStats}>
             <View style={styles.stat}>
               <Text style={styles.statValue}>
-                {activeTrip.distance_km ? formatDistanceMi(Number(activeTrip.distance_km)) : '...'}
+                {view.distanceKm != null ? formatDistanceMi(view.distanceKm) : '...'}
               </Text>
               <Text style={styles.statLabel}>Distance</Text>
             </View>
             <View style={styles.stat}>
               <Text style={styles.statValue}>
-                {activeTrip.duration_min ? formatDuration(Number(activeTrip.duration_min)) : '...'}
+                {view.durationMin != null ? formatDuration(view.durationMin) : '...'}
               </Text>
               <Text style={styles.statLabel}>Duration</Text>
             </View>
             <View style={styles.stat}>
-              <Text style={styles.statValue}>
-                {formatCurrency(Number(activeTrip.estimated_fare ?? 0))}
-              </Text>
+              <Text style={styles.statValue}>{formatCurrency(view.estimatedFare)}</Text>
               <Text style={styles.statLabel}>Estimated</Text>
             </View>
           </View>
@@ -148,7 +200,7 @@ export default function IncomingRideScreen() {
           onPress={handleReject}
           disabled={rejecting || accepting}
         >
-          <Text style={styles.rejectText}>{rejecting ? 'Rejecting...' : 'Reject'}</Text>
+          <Text style={styles.rejectText}>{rejecting ? 'Declining...' : 'Decline'}</Text>
         </Pressable>
         <Pressable
           style={[styles.button, styles.acceptButton, accepting && { opacity: 0.5 }]}
