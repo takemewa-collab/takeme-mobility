@@ -77,29 +77,13 @@ export async function GET(request: Request) {
     testRowId = null;
   }));
 
-  // Step 3: Stripe payment intent create + cancel
+  // Step 3: Stripe connectivity. LIVE keys get a READ-ONLY authenticated
+  // check (GET /v1/balance) — never creates/cancels live objects; the
+  // synthetic $1 create+cancel cycle runs only against sk_test_ keys.
+  // See lib/monitoring/stripe-check.ts.
   steps.push(await runStep('stripe_payment_cycle', async () => {
-    const key = process.env.STRIPE_SECRET_KEY;
-    if (!key) throw new Error('STRIPE_SECRET_KEY not set');
-
-    // Create minimal payment intent
-    const createRes = await fetch('https://api.stripe.com/v1/payment_intents', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${key}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: 'amount=100&currency=usd&metadata[test]=e2e_monitor',
-    });
-    if (!createRes.ok) throw new Error(`Create: HTTP ${createRes.status}`);
-    const pi = await createRes.json() as { id: string };
-
-    // Cancel it immediately
-    const cancelRes = await fetch(`https://api.stripe.com/v1/payment_intents/${pi.id}/cancel`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${key}` },
-    });
-    if (!cancelRes.ok) throw new Error(`Cancel: HTTP ${cancelRes.status}`);
+    const { runStripeCheck } = await import('@/lib/monitoring/stripe-check');
+    await runStripeCheck(process.env.STRIPE_SECRET_KEY ?? '');
   }));
 
   // Step 4: Redis write + read + delete
@@ -125,31 +109,90 @@ export async function GET(request: Request) {
     if (!delRes.ok) throw new Error(`DEL: HTTP ${delRes.status}`);
   }));
 
-  // Step 5: Send test email via SES
-  steps.push(await runStep('ses_send_email', async () => {
-    if (!process.env.AWS_ACCESS_KEY_ID) throw new Error('AWS credentials not set');
-    const ses = new SESClient({
-      region: process.env.AWS_REGION ?? 'us-east-1',
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
-      },
-    });
-    await ses.send(new SendEmailCommand({
-      Source: process.env.SES_FROM_EMAIL ?? 'acilholding@gmail.com',
-      Destination: { ToAddresses: [ALERT_EMAIL] },
-      Message: {
-        Subject: { Data: '[TakeMe E2E] System Check' },
-        Body: {
-          Text: { Data: `E2E system check passed at ${new Date().toISOString()}. All critical paths verified.` },
-        },
-      },
-    }));
-  }));
-
   // Clean up test row if still exists (safety net)
   if (testRowId) {
     try { await sb.from('monitoring_e2e').delete().eq('id', testRowId); } catch { /* cleanup */ }
+  }
+
+  // ── Email policy: never on routine success ──────────────────────────
+  // Only a failing run, a failing→healthy recovery, or an explicitly
+  // configured digest (MONITOR_DIGEST_HOURS) sends the SES email.
+  const coreFailed = steps.filter((s) => s.status === 'fail').length;
+
+  // Previous run's health, read BEFORE this run's rows are inserted.
+  // Rows within 10s of the newest row belong to the same (previous) run.
+  let previousRunHealthy: boolean | null = null;
+  try {
+    const { data: prevRows } = await sb
+      .from('monitoring_e2e')
+      .select('step, status, created_at')
+      .not('step', 'in', '("_e2e_synthetic_test","_digest_email_sent")')
+      .order('created_at', { ascending: false })
+      .limit(10);
+    if (prevRows && prevRows.length > 0) {
+      const newest = new Date(prevRows[0].created_at).getTime();
+      const prevRun = prevRows.filter(
+        (r) => Math.abs(new Date(r.created_at).getTime() - newest) <= 10_000,
+      );
+      previousRunHealthy = prevRun.every((r) => r.status === 'pass');
+    }
+  } catch { /* no history — stay null */ }
+
+  const digestEveryHours = Number(process.env.MONITOR_DIGEST_HOURS ?? '') || null;
+  let lastDigestAt: Date | null = null;
+  if (digestEveryHours) {
+    const { data: digestRow } = await sb
+      .from('monitoring_e2e')
+      .select('created_at')
+      .eq('step', '_digest_email_sent')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    lastDigestAt = digestRow ? new Date(digestRow.created_at) : null;
+  }
+
+  const { monitorEmailReason } = await import('@/lib/monitoring/email-policy');
+  const emailReason = monitorEmailReason({
+    currentFailed: coreFailed,
+    previousRunHealthy,
+    digestEveryHours,
+    lastDigestAt,
+  });
+
+  if (emailReason) {
+    steps.push(await runStep('ses_send_email', async () => {
+      if (!process.env.AWS_ACCESS_KEY_ID) throw new Error('AWS credentials not set');
+      const ses = new SESClient({
+        region: process.env.AWS_REGION ?? 'us-east-1',
+        credentials: {
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+        },
+      });
+      const failing = steps.filter((s) => s.status === 'fail');
+      const subject =
+        emailReason === 'failure'
+          ? `[TakeMe E2E] FAILURE — ${failing.length} step(s) failing`
+          : emailReason === 'recovery'
+            ? '[TakeMe E2E] Recovered — all checks passing'
+            : '[TakeMe E2E] Digest — all checks passing';
+      const lines = steps.map((s) => `${s.step}: ${s.status}${s.error ? ` (${s.error})` : ''}`);
+      await ses.send(new SendEmailCommand({
+        Source: process.env.SES_FROM_EMAIL ?? 'acilholding@gmail.com',
+        Destination: { ToAddresses: [ALERT_EMAIL] },
+        Message: {
+          Subject: { Data: subject },
+          Body: {
+            Text: { Data: `${subject}\nat ${new Date().toISOString()}\n\n${lines.join('\n')}` },
+          },
+        },
+      }));
+    }));
+    if (emailReason === 'digest') {
+      try {
+        await sb.from('monitoring_e2e').insert({ step: '_digest_email_sent', status: 'pass', duration_ms: 0 });
+      } catch { /* marker is best-effort */ }
+    }
   }
 
   // Save results to DB
@@ -187,7 +230,7 @@ export async function GET(request: Request) {
       currentRun = { timestamp: row.created_at, steps: [] };
       runs.push(currentRun);
     }
-    if (row.step !== '_e2e_synthetic_test') {
+    if (row.step !== '_e2e_synthetic_test' && row.step !== '_digest_email_sent') {
       currentRun.steps.push({ step: row.step, status: row.status, duration_ms: row.duration_ms });
     }
   }
